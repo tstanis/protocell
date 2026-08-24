@@ -2,6 +2,7 @@
   "name": "protocell",
   "private": true,
   "version": "0.0.1",
+  "license": "MIT",
   "type": "module",
   "description": "A factory game built out of cell biology. See SPEC.md.",
   "workspaces": [

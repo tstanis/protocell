@@ -149,3 +149,8 @@ relying on anyone remembering it.
   triggered directly.
 - [SPEC §16.2](SPEC.md) — what each prototype actually validates versus what it appears to.
 - [SPEC §16.3](SPEC.md) — what building it changed, including the sweep falsifying §13.6.
+
+## License
+
+[MIT](LICENSE). Do what you like with it, including the design in
+[SPEC.md](SPEC.md) — that document is the more useful half of this repository.
