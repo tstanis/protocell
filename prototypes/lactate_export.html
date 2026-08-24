@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lactate export</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080b11; color: #d6dae2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 26px; }
+  .hud { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    padding: 11px 16px; margin-bottom: 12px; background: #0d1420;
+    border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; }
+  .meter { display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+  .meter .lab { font-size: 11px; letter-spacing: .04em; color: #99a2b1; text-transform: uppercase; }
+  .bar { height: 9px; border-radius: 5px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0%; background: #8fb35a; transition: width .2s; border-radius: 5px; }
+  .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,0.09); }
+  .atp { display: flex; align-items: baseline; gap: 7px; }
+  .atp .k { font-size: 11px; color: #b7a94e; text-transform: uppercase; letter-spacing: .06em; }
+  .atp .v { font: 700 20px ui-monospace, monospace; color: #ffe98a; }
+  .export { margin-left: auto; font-size: 13px; color: #cdd3dd; }
+  .export b { color: #6fe3c8; }
+  .stage { width: 100%; border-radius: 14px; overflow: hidden;
+    background: #080b11; border: 1px solid rgba(255,255,255,0.06); }
+  canvas { display: block; width: 100%; }
+  .controls { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 13px; color: #d6dae2; background: #161d29;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    transition: background .15s, border-color .15s, opacity .15s; }
+  button:hover:not(:disabled) { background: #1e2836; border-color: rgba(255,255,255,0.22); }
+  button:disabled { opacity: .38; cursor: default; }
+  button.hot { border-color: rgba(111,227,200,0.5); }
+  .status { margin-top: 12px; font-size: 12.5px; color: #8891a0; min-height: 3.4em; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hud">
+    <div class="meter"><span class="lab">Lactate inside</span><div class="bar"><i id="barIn"></i></div></div>
+    <div class="meter"><span class="lab">Lactate outside</span><div class="bar"><i id="barOut"></i></div></div>
+    <div class="sep"></div>
+    <div class="atp"><span class="k">ATP</span><span class="v" id="atpv">ok</span></div>
+    <div class="export" id="exp">Export: <b>none</b></div>
+  </div>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button id="btnCarrier" class="hot">Build lactate carrier</button>
+    <button id="btnCirc" disabled>Open circulation</button>
+    <button id="btnReset" disabled>Reset</button>
+  </div>
+  <div class="status" id="status">The enzyme is running — every glucose it cracks makes ATP (good) and lactate (waste). With no way out, lactate is piling up and the cytoplasm is turning green. Build a carrier to let it escape.</div>
+</div>
+
+<script>
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const W = 720, H = 470;
+let dpr = 1, scale = 1;
+function resize() {
+  const cssW = Math.min(cvs.parentElement.clientWidth, 760);
+  dpr = window.devicePixelRatio || 1; scale = cssW / W;
+  cvs.width = Math.round(cssW * dpr); cvs.height = Math.round(cssW * H / W * dpr);
+  cvs.style.height = (cssW * H / W) + 'px';
+}
+window.addEventListener('resize', resize); resize();
+
+const GLU = '#ffb03a', ATPC = '#ffe98a', WASTE = '#9db06f', CARR = '#57e6c8';
+const MEMY0 = 356, MEMY1 = 380;        // membrane band
+const CARX0 = 286, CARX1 = 434;        // carrier window
+const enzC = { x: 360, y: 214 }, pocket = { x: 360, y: 196 };
+const INSIDE_VOL = 62, OUTSIDE_VOL = 15; // outside is a small space → fills fast
+
+let glucose, atpPool, lacIn, lacOut, floats, enzyme, gTimer, carrier, circ, mode;
+
+function reset() {
+  glucose = []; atpPool = []; lacIn = []; lacOut = []; floats = [];
+  for (let i = 0; i < 26; i++) atpPool.push(mkFloat(90 + Math.random() * (H - 300)));
+  enzyme = { free: true, bound: null, bindT: 0 }; gTimer = 0;
+  carrier = false; circ = false; mode = 'crisis';
+  document.getElementById('btnCarrier').disabled = false;
+  document.getElementById('btnCirc').disabled = true;
+  document.getElementById('btnReset').disabled = true;
+  document.getElementById('exp').innerHTML = 'Export: <b>none</b>';
+}
+function mkFloat(y) { return { x: 30 + Math.random() * (W - 60), y, vx: (Math.random() - .5) * 20, vy: (Math.random() - .5) * 20, ph: Math.random() * 6.28 }; }
+function mkLacIn() { return { x: pocket.x + (Math.random() - .5) * 8, y: pocket.y + 6, vx: (Math.random() - .5) * 40, vy: 15 + Math.random() * 15, head: Math.random() * 6.28 }; }
+function floatText(t, x, y, c) { floats.push({ t, x, y, life: 1, c }); }
+
+function concIn() { return lacIn.length / INSIDE_VOL; }
+function concOut() { return lacOut.length / OUTSIDE_VOL; }
+
+function step(dt) {
+  // glucose supply from top
+  gTimer -= dt;
+  if (gTimer <= 0 && glucose.length < 6) { gTimer = 0.55; glucose.push({ x: 60 + Math.random() * (W - 120), y: 92, vx: 0, vy: 0, head: Math.random() * 6.28 }); }
+  for (let i = glucose.length - 1; i >= 0; i--) {
+    const g = glucose[i];
+    if (enzyme.free || enzyme.bound === g) { const dx = pocket.x - g.x, dy = pocket.y - g.y, dd = Math.hypot(dx, dy) || 1; g.vx += dx / dd * 50 * dt * 3; g.vy += dy / dd * 50 * dt * 3; }
+    else { g.head += (Math.random() - .5) * 8 * dt; g.vx += (Math.cos(g.head) * 18 - g.vx) * .05; g.vy += (Math.sin(g.head) * 18 - g.vy) * .05; }
+    g.vx *= .9; g.vy *= .9; g.x += g.vx * dt * 3; g.y += g.vy * dt * 3;
+    if (enzyme.free && Math.hypot(g.x - pocket.x, g.y - pocket.y) < 11) { enzyme.free = false; enzyme.bound = g; enzyme.bindT = 0; }
+    if (enzyme.bound === g) {
+      enzyme.bindT += dt; g.x += (pocket.x - g.x) * .3; g.y += (pocket.y - g.y) * .3;
+      if (enzyme.bindT > 0.42) {
+        glucose.splice(i, 1);
+        const a = mkFloat(pocket.y); a.x = pocket.x - 2; a.vy = -35 - Math.random() * 30; atpPool.push(a);
+        if (atpPool.length > 30) atpPool.shift();
+        lacIn.push(mkLacIn());
+        floatText('+lactate', pocket.x + 30, pocket.y, WASTE);
+        enzyme.free = true; enzyme.bound = null;
+      }
+    }
+    if (g.y > MEMY0 - 8) { g.y = MEMY0 - 8; g.vy *= -0.4; }
+  }
+
+  // ATP cloud motion (contained in cytoplasm)
+  for (const p of atpPool) {
+    p.vx += (Math.random() - .5) * 140 * dt; p.vy += (Math.random() - .5) * 140 * dt; p.vx *= .85; p.vy *= .85;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.ph += dt * 10;
+    if (p.x < 24) { p.x = 24; p.vx *= -.5; } else if (p.x > W - 24) { p.x = W - 24; p.vx *= -.5; }
+    if (p.y < 90) { p.y = 90; p.vy *= -.5; } else if (p.y > MEMY0 - 12) { p.y = MEMY0 - 12; p.vy *= -.5; }
+  }
+
+  const favorableOut = concIn() > concOut();
+
+  // lactate inside: slow drift; funnel toward carrier; cross out if favorable
+  for (let i = lacIn.length - 1; i >= 0; i--) {
+    const p = lacIn[i];
+    p.head += (Math.random() - .5) * 3 * dt; p.vx += (Math.cos(p.head) * 9 - p.vx) * .04; p.vy += (Math.sin(p.head) * 9 - p.vy) * .04;
+    if (carrier && p.x > CARX0 - 30 && p.x < CARX1 + 30) { p.vx += (enzC.x - p.x) * .01; p.vy += 26 * dt; } // funnel
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.x < 22) { p.x = 22; p.vx *= -.5; } else if (p.x > W - 22) { p.x = W - 22; p.vx *= -.5; }
+    if (p.y < 90) { p.y = 90; p.vy *= -.5; }
+    if (p.y > MEMY0 - 6) {
+      if (carrier && p.x > CARX0 && p.x < CARX1 && favorableOut) { // export across carrier
+        lacIn.splice(i, 1); const q = { x: p.x, y: MEMY1 + 6, vx: (Math.random() - .5) * 30, vy: 18 + Math.random() * 14, head: Math.random() * 6.28 }; lacOut.push(q);
+      } else { p.y = MEMY0 - 6; p.vy *= -.5; }
+    }
+  }
+
+  // lactate outside: drift; reflux in if gradient reversed; sweep away if circulation
+  for (let i = lacOut.length - 1; i >= 0; i--) {
+    const p = lacOut[i];
+    if (circ) { p.vx += ((p.x < W / 2 ? -120 : 120) - p.vx) * .06; }
+    else { p.head += (Math.random() - .5) * 3 * dt; p.vx += (Math.cos(p.head) * 8 - p.vx) * .04; }
+    p.vy += (Math.sin(p.head || 0) * 6 - p.vy) * .04;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.y < MEMY1 + 4) {
+      if (carrier && p.x > CARX0 && p.x < CARX1 && !favorableOut) { // reflux back in
+        lacOut.splice(i, 1); lacIn.push({ x: p.x, y: MEMY0 - 8, vx: 0, vy: -20, head: Math.random() * 6.28 }); continue;
+      } else { p.y = MEMY1 + 4; p.vy *= -.4; }
+    }
+    if (p.y > H - 8) { p.y = H - 8; p.vy *= -.4; }
+    if (circ && (p.x < -12 || p.x > W + 12)) lacOut.splice(i, 1);
+    else { if (p.x < 14) { p.x = 14; p.vx *= -.5; } if (p.x > W - 14 && !circ) { p.x = W - 14; p.vx *= -.5; } }
+  }
+
+  for (let i = floats.length - 1; i >= 0; i--) { const f = floats[i]; f.y -= 24 * dt; f.life -= dt * .9; if (f.life <= 0) floats.splice(i, 1); }
+
+  // HUD + mode
+  document.getElementById('barIn').style.width = Math.min(100, concIn() * 150) + '%';
+  document.getElementById('barOut').style.width = Math.min(100, concOut() * 150) + '%';
+  updateMode();
+}
+
+function updateMode() {
+  const exp = document.getElementById('exp');
+  let m;
+  if (!carrier) m = 'crisis';
+  else if (circ) m = 'circ';
+  else if (concOut() > concIn() * 0.72) m = 'stall';
+  else m = 'flow';
+  if (m !== mode) {
+    mode = m;
+    const st = {
+      flow: 'Carrier placed — and notice it costs no ATP. Lactate is high inside and near-zero outside, so it just falls OUT down its own gradient. The cytoplasm is clearing.',
+      stall: 'The catch: the extracellular space is small, and the lactate you dumped is filling it. Outside is catching up to inside, the gradient is flattening, and export is stalling — the waste has nowhere to go. This is the problem circulation exists to solve.',
+      circ: 'Circulation sweeps extracellular lactate away, holding the outside near-empty. The gradient stays steep, so export keeps flowing freely and the inside stays clear. This is why a multicellular body needs a bloodstream.'
+    };
+    if (st[m]) document.getElementById('status').innerHTML = st[m];
+  }
+  exp.innerHTML = 'Export: <b>' + ({ crisis: 'none', flow: 'flowing (free, down-gradient)', stall: 'stalling &mdash; outside catching up', circ: 'flowing (circulation)' })[mode] + '</b>';
+}
+
+// ---- draw ----
+function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+function softDot(x, y, r, color, a) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = hexA(color, 0.5 * a); ctx.beginPath(); ctx.arc(x, y, r + 1.4, 0, 6.28); ctx.fill();
+  ctx.fillStyle = hexA(color, a); ctx.beginPath(); ctx.arc(x, y, r * 0.55, 0, 6.28); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+}
+function grid(y0, y1) {
+  ctx.strokeStyle = 'rgba(255,255,255,0.028)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 24) { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); }
+  for (let y = Math.ceil(y0 / 24) * 24; y <= y1; y += 24) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+}
+
+function draw() {
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // region backgrounds
+  ctx.fillStyle = 'rgba(16,26,40,0.7)'; ctx.fillRect(0, 84, W, MEMY0 - 84);      // cytoplasm base
+  ctx.fillStyle = 'rgba(10,15,24,0.9)'; ctx.fillRect(0, MEMY1, W, H - MEMY1);     // extracellular base
+  // concentration tints (green by lactate concentration)
+  ctx.fillStyle = `rgba(122,150,86,${Math.min(0.34, concIn() * 0.42)})`; ctx.fillRect(0, 84, W, MEMY0 - 84);
+  ctx.fillStyle = `rgba(122,150,86,${Math.min(0.34, concOut() * 0.30)})`; ctx.fillRect(0, MEMY1, W, H - MEMY1);
+  grid(84, MEMY0); grid(MEMY1, H);
+
+  // labels
+  ctx.fillStyle = 'rgba(214,218,226,0.6)'; ctx.font = '12px -apple-system, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('CYTOPLASM (inside)', 16, 102);
+  ctx.fillText('EXTRACELLULAR SPACE (outside)', 16, H - 12);
+
+  // membrane band + tiles
+  ctx.fillStyle = 'rgba(226,196,138,0.85)'; ctx.fillRect(0, MEMY0, W, MEMY1 - MEMY0);
+  ctx.strokeStyle = 'rgba(20,20,25,0.5)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 20) { ctx.beginPath(); ctx.moveTo(x, MEMY0); ctx.lineTo(x, MEMY1); ctx.stroke(); }
+  // carrier
+  if (carrier) {
+    ctx.save(); ctx.shadowColor = CARR; ctx.shadowBlur = 14;
+    ctx.fillStyle = CARR; ctx.fillRect(CARX0, MEMY0 - 1, CARX1 - CARX0, MEMY1 - MEMY0 + 2);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(8,12,18,0.85)'; ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('lactate carrier (free)', (CARX0 + CARX1) / 2, (MEMY0 + MEMY1) / 2 + 4);
+    // flux arrow
+    const flux = concIn() - concOut();
+    const mag = Math.min(26, Math.abs(flux) * 90);
+    if (mag > 2) {
+      const dir = flux > 0 ? 1 : -1, ax = (CARX0 + CARX1) / 2 + 92, ay = (MEMY0 + MEMY1) / 2;
+      ctx.strokeStyle = CARR; ctx.fillStyle = CARR; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(ax, ay - dir * mag / 2); ctx.lineTo(ax, ay + dir * mag / 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ax, ay + dir * (mag / 2 + 7)); ctx.lineTo(ax - 4, ay + dir * (mag / 2 - 1)); ctx.lineTo(ax + 4, ay + dir * (mag / 2 - 1)); ctx.closePath(); ctx.fill();
+    }
+  }
+  // circulation flow hint
+  if (circ) {
+    ctx.strokeStyle = 'rgba(120,180,235,0.35)'; ctx.lineWidth = 2;
+    const yy = H - 26;
+    for (let k = 0; k < 5; k++) { const bx = 40 + k * 150 + (performance.now() / 12 % 150); ctx.beginPath(); ctx.moveTo(bx, yy); ctx.lineTo(bx + 22, yy); ctx.stroke(); }
+  }
+
+  // enzyme
+  const g = ctx.createRadialGradient(enzC.x, enzC.y, 4, enzC.x, enzC.y, 30);
+  g.addColorStop(0, 'rgba(150,168,200,0.32)'); g.addColorStop(1, 'rgba(150,168,200,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(enzC.x, enzC.y, 30, 0, 6.28); ctx.fill();
+  const off = [[-15,-8],[-2,-15],[11,-11],[16,3],[6,13],[-9,12],[-16,3]];
+  const cols = ['#9b8cff','#3bd6b4','#3bd6b4','#ff7eb0','#5bb8ff','#3bd6b4','#7ee787'];
+  for (let i = 0; i < off.length; i++) { ctx.fillStyle = cols[i]; ctx.beginPath(); ctx.arc(enzC.x + off[i][0], enzC.y + off[i][1], 6, 0, 6.28); ctx.fill(); }
+  ctx.strokeStyle = enzyme.free ? 'rgba(255,176,58,0.6)' : 'rgba(255,255,255,0.5)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(pocket.x, pocket.y, 8, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+
+  // particles
+  for (const p of lacOut) { ctx.fillStyle = hexA(WASTE, .6); ctx.beginPath(); ctx.arc(p.x, p.y, 3.3, 0, 6.28); ctx.fill(); ctx.fillStyle = hexA(WASTE, .95); ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 6.28); ctx.fill(); }
+  for (const p of lacIn) { ctx.fillStyle = hexA(WASTE, .6); ctx.beginPath(); ctx.arc(p.x, p.y, 3.3, 0, 6.28); ctx.fill(); ctx.fillStyle = hexA(WASTE, .95); ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 6.28); ctx.fill(); }
+  for (const gp of glucose) softDot(gp.x, gp.y, 4, GLU, .95);
+  for (const p of atpPool) softDot(p.x, p.y, 2.1, ATPC, 0.6 + 0.4 * Math.sin(p.ph));
+
+  ctx.textAlign = 'center'; ctx.font = '600 12px ui-monospace, monospace';
+  for (const f of floats) { ctx.globalAlpha = f.life; ctx.fillStyle = f.c; ctx.fillText(f.t, f.x, f.y); ctx.globalAlpha = 1; }
+}
+
+let last = performance.now();
+function frame(now) { let dt = (now - last) / 1000; last = now; if (dt > .05) dt = .05; step(dt); draw(); requestAnimationFrame(frame); }
+
+document.getElementById('btnCarrier').addEventListener('click', function () {
+  carrier = true; this.disabled = true;
+  document.getElementById('btnCirc').disabled = false;
+  document.getElementById('btnReset').disabled = false;
+});
+document.getElementById('btnCirc').addEventListener('click', function () { circ = true; this.disabled = true; });
+document.getElementById('btnReset').addEventListener('click', function () {
+  reset();
+  document.getElementById('status').innerHTML = 'The enzyme is running — every glucose it cracks makes ATP (good) and lactate (waste). With no way out, lactate is piling up and the cytoplasm is turning green. Build a carrier to let it escape.';
+});
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

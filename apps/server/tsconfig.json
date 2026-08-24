@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "./dist", "rootDir": ".", "types": ["node"] },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "references": [{ "path": "../../packages/sim" }, { "path": "../../packages/protocol" }]
+}

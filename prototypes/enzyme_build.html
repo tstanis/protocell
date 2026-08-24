@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Building a glucose enzyme</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #080b11; color: #d6dae2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 26px; }
+  .hud {
+    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    padding: 12px 16px; margin-bottom: 12px;
+    background: #0d1420; border: 1px solid rgba(255,255,255,0.07); border-radius: 12px;
+  }
+  .atp { display: flex; align-items: baseline; gap: 9px; }
+  .atp .k { font-size: 12px; letter-spacing: .08em; color: #b7a94e; text-transform: uppercase; }
+  .atp .v {
+    font: 700 34px/1 ui-monospace, "SF Mono", Menlo, monospace;
+    color: #ffe98a; text-shadow: 0 0 16px rgba(255,224,120,0.45);
+    transition: color .12s; min-width: 62px;
+  }
+  .atp .v.down { color: #ff7a7a; }
+  .atp .v.up { color: #7ee79a; }
+  .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,0.09); }
+  .pool { display: flex; gap: 12px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #c4cad4; }
+  .chip i { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+  .chip b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .waste { display: flex; align-items: baseline; gap: 8px; margin-left: auto; }
+  .waste .k { font-size: 11.5px; color: #8a9a7a; text-transform: uppercase; letter-spacing: .05em; }
+  .waste .v { font: 600 18px ui-monospace, monospace; color: #b3c39a; font-variant-numeric: tabular-nums; }
+  .stage { width: 100%; border-radius: 14px; overflow: hidden;
+    background: radial-gradient(120% 120% at 50% 45%, #0e1522 0%, #080b11 72%);
+    border: 1px solid rgba(255,255,255,0.06); }
+  canvas { display: block; width: 100%; }
+  .controls { display: flex; gap: 8px; margin-top: 14px; }
+  button { font: inherit; font-size: 13px; color: #d6dae2; background: #161d29;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    transition: background .15s, border-color .15s, opacity .15s; }
+  button:hover:not(:disabled) { background: #1e2836; border-color: rgba(255,255,255,0.22); }
+  button:disabled { opacity: .4; cursor: default; }
+  .status { margin-top: 12px; font-size: 12.5px; color: #8891a0; min-height: 2.4em; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hud">
+    <div class="atp"><span class="k">ATP</span><span class="v" id="atpv">120</span></div>
+    <div class="sep"></div>
+    <div class="pool" id="pool"></div>
+    <div class="waste"><span class="k">Lactate</span><span class="v" id="wastev">0</span></div>
+  </div>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button id="btnBuild">Build glucose enzyme</button>
+    <button id="btnReset" disabled>Reset</button>
+  </div>
+  <div class="status" id="status">Blueprint ready — bill of materials: Gly&times;3, Leu&times;2, Lys&times;1, Ala&times;1, Val&times;1, plus ~32 ATP (of your 60). Press <b>Build</b>.</div>
+</div>
+
+<script>
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const W = 720, H = 452;
+let dpr = 1, scale = 1;
+function resize() {
+  const cssW = Math.min(cvs.parentElement.clientWidth, 760);
+  dpr = window.devicePixelRatio || 1; scale = cssW / W;
+  cvs.width = Math.round(cssW * dpr); cvs.height = Math.round(cssW * H / W * dpr);
+  cvs.style.height = (cssW * H / W) + 'px';
+}
+window.addEventListener('resize', resize); resize();
+
+// amino-acid types
+const AA = { Gly:'#3bd6b4', Leu:'#9b8cff', Lys:'#ff7eb0', Ala:'#5bb8ff', Val:'#7ee787' };
+const GLU = '#ffb03a', ATPC = '#ffe98a', WASTE = '#95a67e';
+const SEQ = ['Leu','Gly','Gly','Lys','Ala','Gly','Leu','Val'];
+const START_POOL = { Gly:5, Leu:3, Lys:2, Ala:2, Val:2 };
+
+let atp, atpDisp, pool, poolDots, chain, glucose, atpPool, lacPool, floats, phase, build, foldT, enzyme, wasteCount, glucoseTimer;
+
+const cx = W/2, cy = 258;
+const chainX = 250, chainY = 248, chainGap = 24;
+const enzC = { x: 300, y: 300 }, pocket = { x: 300, y: 268 };
+const bot = { x: 520, y: 250, tx: 520, ty: 250, carry: null, rot: 0 };
+
+function reset() {
+  atp = 60; atpDisp = 60;
+  pool = { ...START_POOL };
+  poolDots = [];
+  for (const type in pool) for (let i = 0; i < pool[type]; i++) poolDots.push(mkPoolDot(type));
+  chain = []; glucose = []; atpPool = []; lacPool = []; floats = [];
+  for (let i = 0; i < Math.round(atp / 2); i++) atpPool.push(mkFloat('atp'));
+  phase = 'idle'; build = { i: 0, sub: 'toPool', target: null }; foldT = 0;
+  enzyme = null; wasteCount = 0; glucoseTimer = 0;
+  bot.x = 520; bot.y = 250; bot.carry = null;
+  renderPool();
+  document.getElementById('wastev').textContent = '0';
+}
+function mkPoolDot(type) {
+  return { type, x: 470 + Math.random() * 210, y: 120 + Math.random() * 250, ph: Math.random() * 6.28 };
+}
+function mkFloat(kind) {
+  return { x: 30 + Math.random() * (W - 60), y: 96 + Math.random() * (H - 116),
+    vx: (Math.random() - .5) * 20, vy: (Math.random() - .5) * 20, ph: Math.random() * 6.28, kind };
+}
+function removeNearest(list, x, y) {
+  let best = -1, bd = 1e9;
+  for (let i = 0; i < list.length; i++) { const d = (list[i].x - x) ** 2 + (list[i].y - y) ** 2; if (d < bd) { bd = d; best = i; } }
+  if (best >= 0) list.splice(best, 1);
+}
+function updatePool(list, dt, kind) {
+  for (const p of list) {
+    if (kind === 'atp') { p.vx += (Math.random() - .5) * 150 * dt; p.vy += (Math.random() - .5) * 150 * dt; p.vx *= 0.85; p.vy *= 0.85; }
+    else { p.head = (p.head || 0) + (Math.random() - .5) * 3 * dt; p.vx += (Math.cos(p.head) * 9 - p.vx) * 0.04; p.vy += (Math.sin(p.head) * 9 - p.vy) * 0.04; }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.x < 24) { p.x = 24; p.vx *= -0.5; } else if (p.x > W - 24) { p.x = W - 24; p.vx *= -0.5; }
+    if (p.y < 92) { p.y = 92; p.vy *= -0.5; } else if (p.y > H - 16) { p.y = H - 16; p.vy *= -0.5; }
+    p.ph += dt * (kind === 'atp' ? 10 : 2);
+  }
+}
+
+function renderPool() {
+  const el = document.getElementById('pool');
+  el.innerHTML = '';
+  for (const type in START_POOL) {
+    const c = document.createElement('span'); c.className = 'chip';
+    c.innerHTML = `<i style="background:${AA[type]}"></i>${type} <b id="pc_${type}">${pool[type]}</b>`;
+    el.appendChild(c);
+  }
+}
+function setPool(type) { const e = document.getElementById('pc_' + type); if (e) e.textContent = pool[type]; }
+
+function floatText(text, x, y, color) { floats.push({ text, x, y, vy: -26, life: 1, color }); }
+function flashATP(cls) { const e = document.getElementById('atpv'); e.classList.add(cls); setTimeout(() => e.classList.remove(cls), 200); }
+
+// ---- update ----
+function step(dt) {
+  bot.rot += dt * 1.1;
+
+  if (phase === 'assembling') {
+    const type = SEQ[build.i];
+    if (build.sub === 'toPool') {
+      if (!build.target) {
+        let best = null, bd = 1e9;
+        for (const d of poolDots) if (d.type === type) { const dist = (d.x - bot.x) ** 2 + (d.y - bot.y) ** 2; if (dist < bd) { bd = dist; best = d; } }
+        build.target = best;
+      }
+      if (build.target) {
+        moveBot(build.target.x, build.target.y, dt, 400);
+        if (near(build.target.x, build.target.y, 8)) {
+          poolDots.splice(poolDots.indexOf(build.target), 1);
+          pool[type]--; setPool(type);
+          bot.carry = { type }; build.target = null; build.sub = 'toChain';
+        }
+      }
+    } else {
+      const ax = chainX + build.i * chainGap, ay = chainY;
+      moveBot(ax, ay, dt, 400);
+      if (near(ax, ay, 8)) {
+        chain.push({ type, rx: ax, ry: ay, x: ax, y: ay, fx: ax, fy: ay });
+        atp -= 4; flashATP('down'); floatText('-4 ATP', ax, ay - 18, '#ff8a8a');
+        removeNearest(atpPool, ax, ay); removeNearest(atpPool, ax, ay);
+        bot.carry = null; build.i++; build.sub = 'toPool';
+        if (build.i >= SEQ.length) { phase = 'folding'; foldT = 0; computeFold(); setStatus('folding'); }
+      }
+    }
+  } else if (phase === 'folding') {
+    foldT = Math.min(1, foldT + dt / 1.3);
+    const e = ease(foldT);
+    for (const b of chain) { b.x = b.rx + (b.fx - b.rx) * e; b.y = b.ry + (b.fy - b.ry) * e; }
+    if (foldT >= 1) { phase = 'running'; enzyme = { free: true, bound: null, bindT: 0 }; setStatus('running'); }
+  } else if (phase === 'running') {
+    glucoseTimer -= dt;
+    if (glucoseTimer <= 0 && glucose.length < 7) {
+      glucoseTimer = 0.9;
+      const fromL = Math.random() < 0.5;
+      glucose.push({ x: fromL ? -10 : W + 10, y: 200 + Math.random() * 150, vx: 0, vy: 0, head: Math.random() * 6.28 });
+    }
+    for (let i = glucose.length - 1; i >= 0; i--) {
+      const g = glucose[i];
+      if (enzyme.free || enzyme.bound === g) {
+        const dx = pocket.x - g.x, dy = pocket.y - g.y, dd = Math.hypot(dx, dy) || 1;
+        g.vx += dx / dd * 55 * dt * 3; g.vy += dy / dd * 55 * dt * 3;
+      } else {
+        g.head += (Math.random() - 0.5) * 8 * dt;
+        g.vx += (Math.cos(g.head) * 20 - g.vx) * 0.05; g.vy += (Math.sin(g.head) * 20 - g.vy) * 0.05;
+      }
+      g.vx *= 0.9; g.vy *= 0.9;
+      g.x += g.vx * dt * 3; g.y += g.vy * dt * 3;
+      if (enzyme.free && Math.hypot(g.x - pocket.x, g.y - pocket.y) < 12) { enzyme.free = false; enzyme.bound = g; enzyme.bindT = 0; }
+      if (enzyme.bound === g) {
+        enzyme.bindT += dt;
+        g.x += (pocket.x - g.x) * 0.3; g.y += (pocket.y - g.y) * 0.3;
+        if (enzyme.bindT > 0.45) {
+          glucose.splice(i, 1);
+          atp += 2; flashATP('up'); floatText('+2 ATP', pocket.x, pocket.y - 16, '#8ef0a6');
+          const a1 = mkFloat('atp'); a1.x = pocket.x - 2; a1.y = pocket.y; a1.vx = (Math.random() - .5) * 130; a1.vy = -30 - Math.random() * 45; atpPool.push(a1);
+          const l1 = mkFloat('lac'); l1.x = pocket.x; l1.y = pocket.y + 6; l1.vx = (Math.random() - .5) * 50; l1.vy = 12 + Math.random() * 22; lacPool.push(l1);
+          wasteCount++; document.getElementById('wastev').textContent = wasteCount;
+          enzyme.free = true; enzyme.bound = null;
+        }
+      }
+      if (g.x < -30 || g.x > W + 30) glucose.splice(i, 1);
+    }
+  }
+
+  for (let i = floats.length - 1; i >= 0; i--) { const f = floats[i]; f.y += f.vy * dt; f.life -= dt * 0.9; if (f.life <= 0) floats.splice(i, 1); }
+  updatePool(atpPool, dt, 'atp');
+  updatePool(lacPool, dt, 'lac');
+  atpDisp += (atp - atpDisp) * Math.min(1, dt * 9);
+  document.getElementById('atpv').textContent = Math.round(atpDisp);
+
+  for (const d of poolDots) { d.ph += dt * 3; }
+}
+function moveBot(tx, ty, dt, sp) {
+  const dx = tx - bot.x, dy = ty - bot.y, dd = Math.hypot(dx, dy) || 1;
+  const s = Math.min(dd, sp * dt); bot.x += dx / dd * s; bot.y += dy / dd * s;
+}
+function near(x, y, r) { return Math.hypot(bot.x - x, bot.y - y) < r; }
+function ease(t) { return t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+function computeFold() {
+  const off = [[-16,-9],[-3,-16],[11,-13],[18,0],[12,14],[-3,16],[-17,10],[0,0]];
+  for (let i = 0; i < chain.length; i++) { chain[i].fx = enzC.x + off[i][0]; chain[i].fy = enzC.y + off[i][1]; }
+}
+
+// ---- draw ----
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(255,255,255,0.028)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 24) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += 24) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+}
+function drawBlueprint() {
+  const n = SEQ.length, gap = 34, x0 = cx - (n - 1) * gap / 2, y = 46;
+  ctx.fillStyle = 'rgba(214,218,226,0.62)'; ctx.font = '12px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('BLUEPRINT · glucose enzyme (glycolysis)', cx, 22);
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x0 + (n - 1) * gap, y); ctx.stroke();
+  for (let i = 0; i < n; i++) {
+    const x = x0 + i * gap, done = i < build.i || phase === 'folding' || phase === 'running';
+    ctx.beginPath(); ctx.arc(x, y, 9, 0, 6.28);
+    ctx.fillStyle = done ? AA[SEQ[i]] : 'rgba(30,38,50,0.9)'; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = done ? 'rgba(255,255,255,0.55)' : AA[SEQ[i]]; ctx.stroke();
+  }
+}
+function softDot(x, y, r, color, a) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = color.replace('rgb', 'rgba').length ? hexA(color, 0.5 * a) : color;
+  ctx.beginPath(); ctx.arc(x, y, r + 1.4, 0, 6.28); ctx.fill();
+  ctx.fillStyle = hexA(color, a); ctx.beginPath(); ctx.arc(x, y, r * 0.55, 0, 6.28); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+function bead(x, y, type, r) {
+  ctx.fillStyle = hexA(AA[type], 0.28); ctx.beginPath(); ctx.arc(x, y, r + 3, 0, 6.28); ctx.fill();
+  ctx.fillStyle = AA[type]; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.28); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.beginPath(); ctx.arc(x - r*0.3, y - r*0.3, r*0.3, 0, 6.28); ctx.fill();
+}
+
+function draw() {
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  drawGrid();
+  const lacTint = Math.min(0.30, wasteCount * 0.0038);
+  if (lacTint > 0.003) { ctx.fillStyle = `rgba(122,150,86,${lacTint})`; ctx.fillRect(0, 84, W, H - 84); }
+  drawBlueprint();
+
+  // pool dots
+  for (const d of poolDots) {
+    const jx = Math.sin(d.ph) * 2, jy = Math.cos(d.ph * 1.3) * 2;
+    bead(d.x + jx, d.y + jy, d.type, 4.5);
+  }
+
+  // enzyme body (folding/running)
+  if (phase === 'folding' || phase === 'running') {
+    const g = ctx.createRadialGradient(enzC.x, enzC.y, 4, enzC.x, enzC.y, 32);
+    g.addColorStop(0, 'rgba(150,168,200,0.30)'); g.addColorStop(1, 'rgba(150,168,200,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(enzC.x, enzC.y, 32, 0, 6.28); ctx.fill();
+  }
+  // pocket (running)
+  if (phase === 'running') {
+    ctx.strokeStyle = enzyme.free ? 'rgba(255,176,58,0.6)' : 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pocket.x, pocket.y, 9, Math.PI * 0.15, Math.PI * 0.85, true); ctx.stroke();
+  }
+  // chain / enzyme beads + peptide links
+  if (chain.length) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < chain.length; i++) { const b = chain[i]; if (i === 0) ctx.moveTo(b.x, b.y); else ctx.lineTo(b.x, b.y); }
+    ctx.stroke();
+    for (const b of chain) bead(b.x, b.y, b.type, 7);
+  }
+
+  // lactate pool (dull, slow-drifting — accumulates as concentration)
+  for (const p of lacPool) {
+    ctx.fillStyle = hexA(WASTE, 0.6); ctx.beginPath(); ctx.arc(p.x, p.y, 3.4, 0, 6.28); ctx.fill();
+    ctx.fillStyle = hexA(WASTE, 0.95); ctx.beginPath(); ctx.arc(p.x, p.y, 1.5, 0, 6.28); ctx.fill();
+  }
+  // glucose
+  for (const gp of glucose) softDot(gp.x, gp.y, 4, GLU, 0.95);
+  // ATP pool (bright, twitchy energy — accumulates)
+  for (const p of atpPool) { const fl = 0.6 + 0.4 * Math.sin(p.ph); softDot(p.x, p.y, 2.2, ATPC, fl); }
+
+  // nanobot + carry
+  if (bot.carry) bead(bot.x + 11, bot.y - 11, bot.carry.type, 5.5);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = 'rgba(90,170,240,0.22)'; ctx.beginPath(); ctx.arc(bot.x, bot.y, 15, 0, 6.28); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.translate(bot.x, bot.y); ctx.rotate(bot.rot);
+  ctx.fillStyle = 'rgba(206,230,255,0.96)'; ctx.strokeStyle = 'rgba(120,185,235,0.95)'; ctx.lineWidth = 1.4;
+  ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = i / 6 * 6.28, x = Math.cos(a) * 8, y = Math.sin(a) * 8; if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(58,108,168,0.9)'; ctx.beginPath(); ctx.arc(0, 0, 2.4, 0, 6.28); ctx.fill(); ctx.restore();
+  ctx.fillStyle = 'rgba(180,215,255,0.9)'; ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('nanobot', bot.x + 13, bot.y + 20);
+
+  // floating deltas
+  ctx.textAlign = 'center'; ctx.font = '600 13px ui-monospace, monospace';
+  for (const f of floats) { ctx.fillStyle = f.color.replace(')', `,${f.life})`).replace('rgb', 'rgba').includes('rgba') ? f.color : f.color; ctx.globalAlpha = f.life; ctx.fillText(f.text, f.x, f.y); ctx.globalAlpha = 1; }
+}
+
+let last = performance.now();
+function frame(now) {
+  let dt = (now - last) / 1000; last = now; if (dt > 0.05) dt = 0.05;
+  step(dt); draw();
+  requestAnimationFrame(frame);
+}
+
+const statuses = {
+  assembling: 'Assembling — each peptide bond spends ~4 ATP, and you can watch the bright ATP cloud thin out as the pool drains from 60 toward ~28 to pay for the build.',
+  folding: 'Chain complete. Folding into shape — the pocket is a negative mold of glucose, and the fold is what makes it an enzyme.',
+  running: 'Live. Each glucose &rarr; 2 ATP (bright, accumulating) + 1 lactate (green). The ATP cloud regrows past where it started; lactate builds up and tints the whole cytoplasm — concentration rising, and the next crisis.'
+};
+function setStatus(k) { document.getElementById('status').innerHTML = statuses[k]; }
+
+document.getElementById('btnBuild').addEventListener('click', function () {
+  if (phase !== 'idle') return;
+  phase = 'assembling'; setStatus('assembling');
+  this.disabled = true; document.getElementById('btnReset').disabled = false;
+});
+document.getElementById('btnReset').addEventListener('click', function () {
+  reset(); setStatus('running'); document.getElementById('status').innerHTML =
+    'Blueprint ready — bill of materials: Gly&times;3, Leu&times;2, Lys&times;1, Ala&times;1, Val&times;1, plus ~32 ATP (of your 60). Press <b>Build</b>.';
+  document.getElementById('btnBuild').disabled = false; this.disabled = true;
+});
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

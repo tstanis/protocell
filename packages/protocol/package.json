@@ -1,0 +1,9 @@
+{
+  "name": "@protocell/protocol",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Wire protocol shared by the sim server and its clients. See SPEC.md §15.3.",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" }
+}

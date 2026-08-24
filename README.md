@@ -1,0 +1,151 @@
+# PROTOCELL
+
+A factory/automation game built out of cell biology — the player is a nanobot assembling
+a living organism from the inside out. The full design is in [SPEC.md](SPEC.md); this file
+is just how to run it.
+
+The architecture's one unusual commitment: **the simulation is a standalone server** and
+renderers are separate client processes that subscribe to views over WebSocket (SPEC §3.7).
+That makes the spec's first principle — "numbers are truth; visuals are costume" — a
+process boundary rather than a code-review rule. It also means the sim keeps ticking with
+nobody watching, which is the literal thesis of §2.3.
+
+## Run it
+
+```bash
+npm install
+
+npm run server     # sim server on ws://localhost:8787 — ticks with 0 clients attached
+npm run client     # renderer on http://localhost:5173
+```
+
+> If the server exits immediately with `EADDRINUSE`, an earlier one is still holding 8787
+> and the browser will keep talking to *that* — old code, and changes that appear not to
+> work. Same for vite silently moving to 5174/5175. On Windows:
+> `Get-NetTCPConnection -LocalPort 8787 -State Listen | %{ Stop-Process -Id $_.OwningProcess -Force }`
+
+### Controls
+
+| | |
+|---|---|
+| click | walk the nanobot there |
+| **click a grain** | **pick up a glucose or lactate grain** (§5a) — optional; useful for carrying fuel to a starving enzyme, but no build requires it |
+| **residue chips** (under the blueprints) | choose which amino acid the next **amino-acid transporter** will import (§5, §6.7) — one gate tile per type |
+| click a transporter | **gate it open or shut** (§6.3) — the cell's only self-regulation |
+| click a membrane tile while carrying | walk over and seat the transporter *or flagellum* there. Only the highlighted tiles are offered — about 18% of the ring is buried wall that can host nothing (§4.2a) |
+| double-click while carrying an enzyme | release it here (or use the button) |
+| hover anything | what it is, and what it is doing |
+| wheel | smooth zoom, anchored at the cursor |
+| drag | pan |
+| **right-click** | **swim that way** (§10A) — flagella on the opposite face fire |
+| **Auto-seek** | **the cell picks its own destination** (§10A.9): it sorts the residue and glucose counts and heads for whichever is lowest. Picking a species by hand takes the wheel back |
+| **Chemotaxis** button | hand steering to the cell: it senses the glucose gradient and climbs it |
+| **Stop swimming** | coast. Thrust ends instantly and costs nothing — a cell has no momentum |
+
+There is no reduced-motion setting: it was built and then removed (§11.7), because damping
+the ooze made a healthy cell read as a dying one — stillness is how this game says death,
+and a comfort toggle cannot share that axis.
+
+The HUD corner shows fps, dot count, zoom and a **build stamp** — if that stamp is not the
+time you last started vite, you are looking at a stale server serving old code.
+
+## You are the nanobot
+
+There is no build menu. §1.2 makes the player's avatar a general-purpose molecular
+assembler — *which is what a ribosome is* — so at the start **you are the only assembler
+the cell has**, and every protein is hand-made:
+
+1. **Click to move.** The nanobot walks. Where it stands is where it works.
+2. **Reach the nucleus** and take a blueprint. It will refuse from anywhere else.
+3. **Assemble the chain**, one residue at a time. Each bond spends **one** typed amino acid
+   from your inventory and 4 ATP from the cytoplasm around the bot. Residues are plain
+   counts (§5b) — `lys 14` means you can place fourteen more lysines — so building works
+   anywhere and the supply question is *"have I got any lysine"*, never *"where is it"*.
+   ATP is still drawn locally, so a flat patch of cytoplasm still stalls you where you stand.
+4. **Watch it fold.** The shape is the function.
+5. **Carry it where it goes.** A transporter must be seated in a membrane tile you choose;
+   an enzyme is released into the cytoplasm wherever you drop it. Both choices matter.
+
+### The materials loop (§5b)
+
+Amino acids are an **inventory**, not chemistry. Counts in the HUD, mined from deposits.
+
+- **See it.** A strip of counts, one per residue, in that residue's own shape. Always on
+  screen; never a function of zoom, camera, or cell volume. A blueprint shows `have/need`
+  per type and reddens on the one blocking you.
+- **Find it.** Each residue has its **own deposit** on the map, named, with the amount left
+  and a **harvest ring**. Inside the ring it says *"in range"* and a transporter for that
+  type draws from it; outside, the ring is dashed and nothing happens. Glycine overlaps the
+  cell at spawn, so the loop teaches itself without travelling.
+- **Get it.** A residue transporter is an **inserter**: in range it pulls whole residues at
+  a rate and the deposit counts down. One glycine channel takes you 24 → 38 in the first
+  minute while its deposit drops to 65%.
+- **Move on.** Deposits are finite. Once glycine is stripped, ala and leu are a short swim
+  and val and lys are a real journey — which is what a flagellum is for.
+
+That is the answer to "why build a flagellum": not energy — ATP sits at its ceiling
+regardless — but **materials**. Glucose is everywhere; lysine is somewhere.
+
+Then play the §12 intro in that idiom: **glucose channel** → ATP still falls (raw glucose
+is not energy) → **glycolysis enzyme**, placed near its supply → the ATP curve turns
+around → lactate accumulates and tension climbs → **lactate carriers** (you need two, and
+placement beats count) → the cell recovers. Close the browser tab mid-run and reopen it;
+the simulation will have carried on without you.
+
+Then **leave.** The pocket you started in is finite and you are drawing it down; build a
+**flagellum** the same way and the outside turns from a backdrop into terrain. Thrust is
+paid out of the same ATP field your peptide bonds are — one flagellum costs about half an
+enzyme's output — so every second spent swimming is a second not spent building. That
+trade is the whole of §10A.
+
+## Other commands
+
+```bash
+npm test           # exit code is the truth — never pipe it through grep/head, which
+                   # replaces vitest's status with the pipe tail's (cost: a crashed
+                   # worker looked green for several runs). Read the FILE count too.
+                   # headless — no browser needed anywhere. Runs in TWO passes:
+                   #   test:sim   the sim/protocol/client suites, in parallel
+                   #   test:wire  the socket suite, alone on a quiet machine
+                   # They cannot share a run: the wire tests drive a real server ticking
+                   # at 120 Hz in real time, so CPU contention from the sim workers
+                   # starves it and its wall-clock assertions time out.
+npm run typecheck  # tsc --build across all workspaces
+npm run sweep      # re-measure §17's SA:V sweep (~2 min)
+npm run play-intro # play the whole §12 arc as the nanobot, against a running server
+```
+
+`play-intro` is the end-to-end proof: it connects over the real socket, walks the bot to
+the nucleus, hand-assembles all six proteins bond by bond, and reports the arc.
+
+## Layout
+
+```
+prototypes/          the nine original browser prototypes, untouched, as reference (§18)
+packages/
+  sim/               the truth layer. no DOM, no net, no I/O — tsconfig sets types: []
+  protocol/          wire message types + binary field-frame codec (§15.3)
+apps/
+  server/            node + ws. owns the clock, holds all state
+  client/            vite + canvas2d. renders, sends commands, holds no truth
+scripts/sweep.ts     headless §17 re-measurement
+```
+
+`packages/sim` has no network or DOM dependency and its tsconfig sets `"types": []`, so
+`process` and `fs` are not even in scope — the "no I/O" rule fails to typecheck rather than
+relying on anyone remembering it.
+
+## Where the interesting parts are
+
+- [`packages/sim/src/constants.ts`](packages/sim/src/constants.ts) — the single config
+  block §13 demands, every value carrying the derivation that produced it.
+- [`packages/sim/src/ops/diffuse.ts`](packages/sim/src/ops/diffuse.ts) — the fixed-timestep
+  diffusion and the CFL guard, written to make the prototypes' frame-rate-dependent
+  penetration depth (§17.2) unrepeatable rather than merely fixed.
+- [`packages/sim/src/transport.ts`](packages/sim/src/transport.ts) — the three transport
+  tiers, with tests written so `cell_prototype.html`'s diode "channel" could not pass them.
+- [`packages/sim/test/intro.test.ts`](packages/sim/test/intro.test.ts) — the whole §12 arc
+  as an integration test. Every beat has to emerge from the coupled systems; nothing is
+  triggered directly.
+- [SPEC §16.2](SPEC.md) — what each prototype actually validates versus what it appears to.
+- [SPEC §16.3](SPEC.md) — what building it changed, including the sweep falsifying §13.6.

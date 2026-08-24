@@ -1,0 +1,10 @@
+{
+  "name": "@protocell/client",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Canvas2D renderer. Holds no truth — reads views, sends commands. SPEC.md §11, §3.7.",
+  "scripts": { "dev": "vite", "build": "vite build" },
+  "dependencies": { "@protocell/protocol": "*" },
+  "devDependencies": { "vite": "^6.0.5" }
+}

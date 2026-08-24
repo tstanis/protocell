@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cytoskeleton belts</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080b11; color: #d6dae2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 26px; }
+  .hud { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    padding: 11px 16px; margin-bottom: 12px; background: #0d1420;
+    border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; }
+  .stat { display: flex; align-items: baseline; gap: 8px; }
+  .stat .k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #99a2b1; }
+  .stat .v { font: 700 22px ui-monospace, monospace; font-variant-numeric: tabular-nums; min-width: 40px; }
+  .v.atp { color: #ffe98a; text-shadow: 0 0 14px rgba(255,224,120,0.4); }
+  .v.atp.low { color: #ff7a7a; }
+  .v.rate { color: #7fd0ff; }
+  .v.mot { color: #a9d0ff; }
+  .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,0.09); }
+  .stage { width: 100%; border-radius: 14px; overflow: hidden; background: #080b11; border: 1px solid rgba(255,255,255,0.06); }
+  canvas { display: block; width: 100%; }
+  .controls { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 13px; color: #d6dae2; background: #161d29;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 8px 13px; cursor: pointer;
+    transition: background .15s, border-color .15s, opacity .15s; }
+  button:hover:not(:disabled) { background: #1e2836; border-color: rgba(255,255,255,0.22); }
+  button:disabled { opacity: .36; cursor: default; }
+  button.hot { border-color: rgba(120,200,255,0.5); }
+  .status { margin-top: 12px; font-size: 12.5px; color: #8891a0; min-height: 3.4em; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hud">
+    <div class="stat"><span class="k">ATP</span><span class="v atp" id="atpv">40</span></div>
+    <div class="sep"></div>
+    <div class="stat"><span class="k">Enzyme feed</span><span class="v rate" id="ratev">0.0</span><span class="k" style="text-transform:none">/s</span></div>
+    <div class="stat"><span class="k">Motors</span><span class="v mot" id="motv">0</span></div>
+  </div>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button id="build" class="hot">Build filament highway</button>
+    <button id="addmotor" disabled>Add motor (+1)</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div class="status" id="status">The glucose channel (left) imports fuel, but the enzyme is on the far side of the cell. Diffusion alone is slow and undirected, so glucose piles up near the import and the enzyme starves — watch ATP fall. The empty middle is the problem a belt solves.</div>
+</div>
+
+<script>
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const W = 720, H = 520;
+let dpr = 1, scale = 1;
+function resize() {
+  const cssW = Math.min(cvs.parentElement.clientWidth, 760);
+  dpr = window.devicePixelRatio || 1; scale = cssW / W;
+  cvs.width = Math.round(cssW * dpr); cvs.height = Math.round(cssW * H / W * dpr);
+  cvs.style.height = (cssW * H / W) + 'px';
+}
+window.addEventListener('resize', resize); resize();
+
+const GLU = '#ffb03a', ATPC = '#ffe98a', FIL = '#7fd0ff';
+const CELL = { x0: 60, y0: 90, x1: 660, y1: 470 };
+const importPt = { x: 92, y: 280 };
+const enzC = { x: 604, y: 280 }, pocket = { x: 584, y: 280 };
+const track = { x0: 132, x1: 560, y: 280 };
+
+let atp, atpDisp, glu, motors, enzyme, gTimer, filament, feedRate, feedAcc, feedTimer;
+
+function reset() {
+  atp = 40; atpDisp = 40;
+  glu = []; motors = []; enzyme = { free: true, bound: null, bindT: 0 };
+  gTimer = 0; filament = false; feedRate = 0; feedAcc = 0; feedTimer = 1;
+  document.getElementById('build').disabled = false;
+  document.getElementById('addmotor').disabled = true;
+}
+function mkGlu(x, y) { return { x, y, vx: (Math.random() - .5) * 30, vy: (Math.random() - .5) * 30, ridden: false }; }
+function addMotor() { motors.push({ t: Math.random(), dir: 1, carry: null, yoff: (motors.length % 2 ? 7 : -7) }); document.getElementById('motv').textContent = motors.length; }
+
+function step(dt) {
+  atp -= 1.5 * dt;          // baseline upkeep (cost of living)
+  if (atp < 0) atp = 0;
+
+  // import glucose at the left face
+  gTimer -= dt;
+  if (gTimer <= 0 && glu.length < 70) { gTimer = 0.32; glu.push(mkGlu(importPt.x + (Math.random() - .5) * 16, importPt.y + (Math.random() - .5) * 60)); }
+
+  // free glucose diffuses (slow random walk); ridden glucose is positioned by its motor
+  for (const g of glu) {
+    if (g.ridden) continue;
+    g.vx += (Math.random() - .5) * 55 * dt; g.vy += (Math.random() - .5) * 55 * dt;
+    g.vx *= 0.9; g.vy *= 0.9;
+    g.x += g.vx * dt; g.y += g.vy * dt;
+    if (g.x < CELL.x0 + 12) { g.x = CELL.x0 + 12; g.vx *= -.5; } else if (g.x > CELL.x1 - 12) { g.x = CELL.x1 - 12; g.vx *= -.5; }
+    if (g.y < CELL.y0 + 12) { g.y = CELL.y0 + 12; g.vy *= -.5; } else if (g.y > CELL.y1 - 12) { g.y = CELL.y1 - 12; g.vy *= -.5; }
+  }
+
+  // motors walk the filament, grab glucose at the food end, drop it at the enzyme end
+  if (filament) {
+    const len = track.x1 - track.x0, speed = 200;
+    for (const m of motors) {
+      m.t += m.dir * (speed / len) * dt;
+      atp -= dt * (m.carry ? 0.28 : 0.09);   // walking costs ATP; loaded costs more
+      if (m.t >= 1) { m.t = 1; m.dir = -1; if (m.carry) { m.carry.ridden = false; m.carry.vx = 40; m.carry.vy = (Math.random() - .5) * 30; m.carry = null; } }
+      else if (m.t <= 0) {
+        m.t = 0; m.dir = 1;
+        if (!m.carry) { // grab a nearby free glucose at the food end
+          let best = null, bd = 46 * 46;
+          for (const g of glu) if (!g.ridden) { const d = (g.x - track.x0) ** 2 + (g.y - track.y) ** 2; if (d < bd) { bd = d; best = g; } }
+          if (best) { best.ridden = true; m.carry = best; }
+        }
+      }
+      const mx = track.x0 + (track.x1 - track.x0) * m.t, my = track.y + m.yoff;
+      m.x = mx; m.y = my;
+      if (m.carry) { m.carry.x = mx; m.carry.y = my - 6; }
+    }
+  }
+
+  // enzyme consumes a nearby free glucose -> ATP
+  if (enzyme.free) {
+    let best = null, bd = 40 * 40;
+    for (const g of glu) if (!g.ridden) { const d = (g.x - pocket.x) ** 2 + (g.y - pocket.y) ** 2; if (d < bd) { bd = d; best = g; } }
+    if (best) { enzyme.free = false; enzyme.bound = best; enzyme.bindT = 0; best.ridden = true; }
+  }
+  if (enzyme.bound) {
+    const g = enzyme.bound; g.x += (pocket.x - g.x) * .3; g.y += (pocket.y - g.y) * .3;
+    enzyme.bindT += dt;
+    if (enzyme.bindT > 0.3) {
+      glu.splice(glu.indexOf(g), 1);
+      atp += 2; feedAcc += 1;
+      enzyme.free = true; enzyme.bound = null;
+    }
+  }
+
+  // feed-rate readout (smoothed cracks/sec)
+  feedTimer -= dt;
+  if (feedTimer <= 0) { feedRate = feedRate * 0.5 + feedAcc * 0.5; feedAcc = 0; feedTimer = 1; }
+
+  atpDisp += (atp - atpDisp) * Math.min(1, dt * 9);
+  const av = document.getElementById('atpv'); av.textContent = Math.round(atpDisp); av.classList.toggle('low', atp < 10);
+  document.getElementById('ratev').textContent = feedRate.toFixed(1);
+}
+
+// ---- draw ----
+function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+function softDot(x, y, r, color, a) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = hexA(color, .5 * a); ctx.beginPath(); ctx.arc(x, y, r + 1.4, 0, 6.28); ctx.fill();
+  ctx.fillStyle = hexA(color, a); ctx.beginPath(); ctx.arc(x, y, r * .55, 0, 6.28); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+}
+function roundRect(x0, y0, x1, y1, r) { ctx.beginPath(); ctx.moveTo(x0 + r, y0); ctx.arcTo(x1, y0, x1, y1, r); ctx.arcTo(x1, y1, x0, y1, r); ctx.arcTo(x0, y1, x0, y0, r); ctx.arcTo(x0, y0, x1, y0, r); ctx.closePath(); }
+
+function draw() {
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.026)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 24) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += 24) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  // cell body
+  roundRect(CELL.x0, CELL.y0, CELL.x1, CELL.y1, 60); ctx.fillStyle = 'rgba(38,60,82,0.55)'; ctx.fill();
+  ctx.lineWidth = 13; ctx.strokeStyle = 'rgba(226,196,138,0.8)'; ctx.stroke();
+
+  // labels
+  ctx.fillStyle = 'rgba(214,218,226,0.62)'; ctx.font = '12px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('glucose import', importPt.x + 20, CELL.y0 - 10);
+  ctx.fillText('enzyme', enzC.x, CELL.y0 - 10);
+
+  // import channel marker
+  ctx.save(); ctx.shadowColor = GLU; ctx.shadowBlur = 10; ctx.strokeStyle = GLU; ctx.lineWidth = 15; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(CELL.x0, importPt.y - 26); ctx.lineTo(CELL.x0, importPt.y + 26); ctx.stroke(); ctx.restore();
+
+  // filament highway
+  if (filament) {
+    ctx.strokeStyle = hexA(FIL, 0.5); ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(track.x0, track.y); ctx.lineTo(track.x1, track.y); ctx.stroke();
+    ctx.strokeStyle = hexA(FIL, 0.85); ctx.lineWidth = 1.5;
+    for (let x = track.x0; x < track.x1; x += 12) { ctx.beginPath(); ctx.moveTo(x, track.y - 3); ctx.lineTo(x + 6, track.y + 3); ctx.stroke(); }
+    ctx.fillStyle = hexA(FIL, 0.8); ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('microtubule + motors', track.x0, track.y + 26);
+  }
+
+  // free glucose (density = concentration; note the pile at import, the sparse far side)
+  for (const g of glu) if (!g.ridden || g === (enzyme.bound)) softDot(g.x, g.y, 4, GLU, .95);
+  // ridden glucose drawn with motors below
+
+  // enzyme
+  const gr = ctx.createRadialGradient(enzC.x, enzC.y, 4, enzC.x, enzC.y, 26); gr.addColorStop(0, 'rgba(150,168,200,0.32)'); gr.addColorStop(1, 'rgba(150,168,200,0)');
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(enzC.x, enzC.y, 26, 0, 6.28); ctx.fill();
+  const off = [[-13,-7],[-1,-13],[10,-10],[14,3],[5,12],[-8,10],[-14,3]]; const cols = ['#9b8cff','#3bd6b4','#3bd6b4','#ff7eb0','#5bb8ff','#3bd6b4','#7ee787'];
+  for (let i = 0; i < off.length; i++) { ctx.fillStyle = cols[i]; ctx.beginPath(); ctx.arc(enzC.x + off[i][0], enzC.y + off[i][1], 5.5, 0, 6.28); ctx.fill(); }
+  ctx.strokeStyle = enzyme.free ? 'rgba(255,176,58,0.6)' : 'rgba(255,255,255,0.5)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(pocket.x, pocket.y, 7, Math.PI * 0.6, Math.PI * 1.4); ctx.stroke();
+
+  // motors (mechanical walkers) + their cargo
+  for (const m of motors) {
+    if (m.carry) softDot(m.carry.x, m.carry.y, 4, GLU, .95);
+    ctx.save(); ctx.translate(m.x, m.y); 
+    ctx.fillStyle = m.carry ? 'rgba(150,210,255,0.95)' : 'rgba(120,150,180,0.8)'; ctx.strokeStyle = 'rgba(180,220,255,0.9)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, -5); ctx.lineTo(5, 0); ctx.lineTo(0, 5); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  // floats not used here
+}
+
+let last = performance.now();
+function frame(now) { let dt = (now - last) / 1000; last = now; if (dt > .05) dt = .05; step(dt); draw(); requestAnimationFrame(frame); }
+
+document.getElementById('build').addEventListener('click', function () {
+  filament = true; this.disabled = true;
+  document.getElementById('addmotor').disabled = false;
+  for (let i = 0; i < 5; i++) addMotor();
+  document.getElementById('status').innerHTML = 'Filament highway laid, with motor proteins shuttling glucose straight to the enzyme — directed and fast, but it costs ATP to run (loaded motors cost more). The enzyme feed rate jumps and ATP starts climbing. Notice the highway <b>skips the middle</b>: transport rides the track, not the bulk. Add motors to push throughput up to the enzyme\'s ceiling.';
+});
+document.getElementById('addmotor').addEventListener('click', addMotor);
+document.getElementById('reset').addEventListener('click', function () {
+  reset(); document.getElementById('motv').textContent = '0';
+  document.getElementById('status').innerHTML = 'The glucose channel (left) imports fuel, but the enzyme is on the far side of the cell. Diffusion alone is slow and undirected, so glucose piles up near the import and the enzyme starves — watch ATP fall. The empty middle is the problem a belt solves.';
+});
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

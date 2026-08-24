@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Motility & chemotaxis</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080b11; color: #d6dae2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 26px; }
+  .hud { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    padding: 11px 16px; margin-bottom: 12px; background: #0d1420;
+    border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; }
+  .stat { display: flex; align-items: baseline; gap: 8px; }
+  .stat .k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #99a2b1; }
+  .stat .v { font: 700 22px ui-monospace, monospace; font-variant-numeric: tabular-nums; min-width: 40px; }
+  .v.atp { color: #ffe98a; text-shadow: 0 0 14px rgba(255,224,120,0.4); }
+  .v.atp.low { color: #ff7a7a; }
+  .v.state { font-size: 15px; font-weight: 600; }
+  .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,0.09); }
+  .stage { width: 100%; border-radius: 14px; overflow: hidden; background: #080b11; border: 1px solid rgba(255,255,255,0.06); }
+  canvas { display: block; width: 100%; cursor: crosshair; }
+  .controls { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 13px; color: #d6dae2; background: #161d29;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 8px 13px; cursor: pointer;
+    transition: background .15s, border-color .15s, opacity .15s; }
+  button:hover { background: #1e2836; border-color: rgba(255,255,255,0.22); }
+  button.off { border-color: rgba(226,120,80,0.5); color: #f0a878; }
+  .status { margin-top: 12px; font-size: 12.5px; color: #8891a0; min-height: 3.4em; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hud">
+    <div class="stat"><span class="k">ATP</span><span class="v atp" id="atpv">50</span></div>
+    <div class="sep"></div>
+    <div class="stat"><span class="k">Eaten</span><span class="v" id="eatv" style="color:#ffc46e">0</span></div>
+    <div class="sep"></div>
+    <div class="stat"><span class="v state" id="statev" style="color:#7ee79a">searching</span></div>
+  </div>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button id="chemo">Chemotaxis: ON</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div class="status" id="status">The dish is patchy: amber glucose pockets, one pink toxic zone. The cell swims with its flagellum (costs ATP) and eats glucose (gains ATP). With chemotaxis on it senses the gradient — richer ahead or behind? — and steers up it, toward food and away from toxin. Click anywhere to drop a fresh food patch and watch it navigate over.</div>
+</div>
+
+<script>
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const W = 720, H = 520, CS = 20, GW = W / CS, GH = H / CS;
+let dpr = 1, scale = 1;
+function resize() {
+  const cssW = Math.min(cvs.parentElement.clientWidth, 760);
+  dpr = window.devicePixelRatio || 1; scale = cssW / W;
+  cvs.width = Math.round(cssW * dpr); cvs.height = Math.round(cssW * H / W * dpr);
+  cvs.style.height = (cssW * H / W) + 'px';
+}
+window.addEventListener('resize', resize); resize();
+
+let glu, tox, cell, eaten, chemo, feeding, atpDisp;
+
+function idx(gx, gy) { return gy * GW + gx; }
+function blob(field, cxp, cyp, amp, sig) {
+  for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
+    const dx = (gx + .5) * CS - cxp, dy = (gy + .5) * CS - cyp;
+    field[idx(gx, gy)] = Math.min(1, field[idx(gx, gy)] + amp * Math.exp(-(dx * dx + dy * dy) / (2 * sig * sig)));
+  }
+}
+function reset() {
+  glu = new Float32Array(GW * GH); tox = new Float32Array(GW * GH);
+  blob(glu, 150, 170, 1, 66); blob(glu, 570, 130, 1, 60); blob(glu, 300, 430, 1, 70); blob(glu, 630, 410, 0.9, 58);
+  blob(tox, 400, 250, 1, 56);
+  cell = { x: 110, y: 110, head: 0.6, speed: 0, beat: 0 };
+  eaten = 0; chemo = true; feeding = false; atpDisp = 50; cell.atp = 50;
+  document.getElementById('chemo').textContent = 'Chemotaxis: ON';
+  document.getElementById('chemo').classList.remove('off');
+}
+function sample(field, px, py) {
+  const gx = Math.max(0, Math.min(GW - 1, Math.floor(px / CS))), gy = Math.max(0, Math.min(GH - 1, Math.floor(py / CS)));
+  return field[idx(gx, gy)];
+}
+
+function step(dt) {
+  // field diffuses slowly (patches soften, eaten holes refill from neighbours)
+  const nf = glu.slice();
+  for (let gy = 1; gy < GH - 1; gy++) for (let gx = 1; gx < GW - 1; gx++) {
+    const i = idx(gx, gy);
+    const avg = (glu[i - 1] + glu[i + 1] + glu[i - GW] + glu[i + GW]) * 0.25;
+    nf[i] = glu[i] + (avg - glu[i]) * 0.06 * dt * 8;
+  }
+  glu = nf;
+
+  // ---- SENSE: estimate gradient of (glucose - toxin) around the cell ----
+  let gvx = 0, gvy = 0;
+  const D = 36;
+  for (let k = 0; k < 8; k++) {
+    const a = k / 8 * Math.PI * 2, sx = cell.x + Math.cos(a) * D, sy = cell.y + Math.sin(a) * D;
+    const v = sample(glu, sx, sy) - 1.6 * sample(tox, sx, sy);
+    gvx += Math.cos(a) * v; gvy += Math.sin(a) * v;
+  }
+  const gmag = Math.hypot(gvx, gvy);
+
+  // ---- DECIDE: steer heading ----
+  let desired;
+  if (chemo && gmag > 0.02) desired = Math.atan2(gvy, gvx);
+  else { cell.head += (Math.random() - .5) * 4 * dt; desired = cell.head; if (Math.random() < 0.4 * dt) cell.head += (Math.random() - .5) * 3; } // random run-and-tumble
+  let diff = ((desired - cell.head + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+  cell.head += Math.max(-2.6 * dt, Math.min(2.6 * dt, diff));
+
+  // ---- ACTUATE: swim (costs ATP) ----
+  cell.speed = 74;
+  cell.x += Math.cos(cell.head) * cell.speed * dt;
+  cell.y += Math.sin(cell.head) * cell.speed * dt;
+  cell.beat += dt * (6 + cell.speed * 0.06);
+  if (cell.x < 30) { cell.x = 30; cell.head = Math.PI - cell.head; } else if (cell.x > W - 30) { cell.x = W - 30; cell.head = Math.PI - cell.head; }
+  if (cell.y < 30) { cell.y = 30; cell.head = -cell.head; } else if (cell.y > H - 30) { cell.y = H - 30; cell.head = -cell.head; }
+
+  cell.atp -= (1.0 + 0.019 * cell.speed) * dt;   // baseline upkeep + swimming cost
+
+  // ---- EAT: import glucose under the body (depletes the patch), toxin damages ----
+  feeding = false;
+  const r = 26, gx0 = Math.floor((cell.x - r) / CS), gx1 = Math.floor((cell.x + r) / CS), gy0 = Math.floor((cell.y - r) / CS), gy1 = Math.floor((cell.y + r) / CS);
+  for (let gy = Math.max(0, gy0); gy <= Math.min(GH - 1, gy1); gy++) for (let gx = Math.max(0, gx0); gx <= Math.min(GW - 1, gx1); gx++) {
+    const i = idx(gx, gy);
+    if (glu[i] > 0.02) { const bite = Math.min(glu[i], 1.8 * dt); glu[i] -= bite; cell.atp += bite * 4.2; eaten += bite; feeding = true; }
+  }
+  cell.atp -= sample(tox, cell.x, cell.y) * 7 * dt;   // toxic zone drains ATP
+  if (cell.atp < 0) cell.atp = 0;
+
+  // HUD
+  atpDisp += (cell.atp - atpDisp) * Math.min(1, dt * 9);
+  const av = document.getElementById('atpv'); av.textContent = Math.round(atpDisp); av.classList.toggle('low', cell.atp < 12);
+  document.getElementById('eatv').textContent = Math.round(eaten);
+  const sv = document.getElementById('statev');
+  const inTox = sample(tox, cell.x, cell.y) > 0.15;
+  if (inTox) { sv.textContent = 'in toxin!'; sv.style.color = '#ff7ea0'; }
+  else if (feeding) { sv.textContent = 'feeding'; sv.style.color = '#ffc46e'; }
+  else if (cell.atp < 14) { sv.textContent = 'starving'; sv.style.color = '#ff7a7a'; }
+  else { sv.textContent = chemo ? 'seeking food' : 'wandering'; sv.style.color = chemo ? '#7ee79a' : '#f0a878'; }
+  cell._grad = { x: gvx, y: gvy, m: gmag };
+}
+
+// ---- draw ----
+function draw() {
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#0a0e16'; ctx.fillRect(0, 0, W, H);
+
+  // field heatmaps (this IS the zoomed-out "tint = concentration field" LOD view)
+  for (let gy = 0; gy < GH; gy++) for (let gx = 0; gx < GW; gx++) {
+    const g = glu[idx(gx, gy)], t = tox[idx(gx, gy)];
+    if (g > 0.015) { ctx.fillStyle = `rgba(255,176,58,${g * 0.5})`; ctx.fillRect(gx * CS, gy * CS, CS, CS); }
+    if (t > 0.015) { ctx.fillStyle = `rgba(226,80,120,${t * 0.5})`; ctx.fillRect(gx * CS, gy * CS, CS, CS); }
+  }
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.02)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += CS) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += CS) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  // toxic label
+  ctx.fillStyle = 'rgba(255,150,180,0.6)'; ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('toxic', 400, 250);
+
+  // ---- the cell ----
+  const c = cell, r = 24;
+  // flagellum (beating sine tail, trailing opposite heading)
+  ctx.strokeStyle = 'rgba(226,196,138,0.8)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath();
+  const back = c.head + Math.PI;
+  for (let s = 0; s <= 22; s++) {
+    const dseg = s * 2.2, along = r + dseg;
+    const wob = Math.sin(c.beat - s * 0.6) * Math.min(9, dseg * 0.5);
+    const px = c.x + Math.cos(back) * along + Math.cos(back + Math.PI / 2) * wob;
+    const py = c.y + Math.sin(back) * along + Math.sin(back + Math.PI / 2) * wob;
+    if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  // body
+  ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, 6.28); ctx.fillStyle = 'rgba(40,62,84,0.85)'; ctx.fill();
+  ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(226,196,138,0.9)'; ctx.stroke();
+  ctx.beginPath(); ctx.arc(c.x - 5, c.y + 4, 8, 0, 6.28); ctx.fillStyle = 'rgba(150,132,230,0.6)'; ctx.fill(); // nucleus
+  // sensed-gradient arrow (the "decision")
+  if (c._grad && c._grad.m > 0.03 && chemo) {
+    const ga = Math.atan2(c._grad.y, c._grad.x), L = 22 + Math.min(34, c._grad.m * 60);
+    ctx.strokeStyle = 'rgba(120,220,255,0.9)'; ctx.fillStyle = 'rgba(120,220,255,0.9)'; ctx.lineWidth = 2.5;
+    const ax = c.x + Math.cos(ga) * (r + 6), ay = c.y + Math.sin(ga) * (r + 6);
+    const bx = c.x + Math.cos(ga) * (r + L), by = c.y + Math.sin(ga) * (r + L);
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.save(); ctx.translate(bx, by); ctx.rotate(ga); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-6, -3); ctx.lineTo(-6, 3); ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+}
+
+let last = performance.now();
+function frame(now) { let dt = (now - last) / 1000; last = now; if (dt > .05) dt = .05; step(dt); draw(); requestAnimationFrame(frame); }
+
+cvs.addEventListener('click', function (e) {
+  const rect = cvs.getBoundingClientRect();
+  const px = (e.clientX - rect.left) / rect.width * W, py = (e.clientY - rect.top) / rect.height * H;
+  blob(glu, px, py, 1, 58);
+});
+document.getElementById('chemo').addEventListener('click', function () {
+  chemo = !chemo; this.textContent = 'Chemotaxis: ' + (chemo ? 'ON' : 'OFF'); this.classList.toggle('off', !chemo);
+  document.getElementById('status').innerHTML = chemo
+    ? 'Chemotaxis ON — the cell senses the gradient (blue arrow = the decision) and steers up it toward food, away from toxin. It spends most of its time feeding, so ATP holds.'
+    : 'Chemotaxis OFF — no sensing, just a random run-and-tumble walk. The cell wanders, rarely lands on food, and ATP bleeds away. Sensing is the difference between foraging and starving.';
+});
+document.getElementById('reset').addEventListener('click', function () { reset(); });
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

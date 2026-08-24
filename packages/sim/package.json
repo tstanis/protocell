@@ -1,0 +1,14 @@
+{
+  "name": "@protocell/sim",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The truth layer. Pure TypeScript: no DOM, no network, no I/O. See SPEC.md §3.",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run"
+  }
+}

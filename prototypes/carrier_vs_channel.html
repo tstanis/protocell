@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Carrier vs channel</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080b11; color: #d6dae2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 26px; }
+  .stage { width: 100%; border-radius: 14px; overflow: hidden; background: #080b11; border: 1px solid rgba(255,255,255,0.06); }
+  canvas { display: block; width: 100%; }
+  .controls { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 13px; color: #d6dae2; background: #161d29;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    transition: background .15s, border-color .15s, opacity .15s; }
+  button:hover:not(:disabled) { background: #1e2836; border-color: rgba(255,255,255,0.22); }
+  button:disabled { opacity: .38; cursor: default; }
+  button.hot { border-color: rgba(120,180,235,0.5); }
+  .status { margin-top: 12px; font-size: 12.5px; color: #8891a0; min-height: 3.4em; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button id="btnCirc" class="hot">Open circulation</button>
+    <button id="btnReset">Reset</button>
+  </div>
+  <div class="status" id="status">Same lactate load on both sides. The <b>channel</b> (right) is an open pore — it dumps lactate out in a torrent, far faster than the <b>carrier</b> (left), which shuttles one at a time. But watch the outside fill: with nowhere to go, the fast channel just races to equilibrium and starts refluxing, and it leaks ATP through its open pore. Speed without control.</div>
+</div>
+
+<script>
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const W = 720, H = 484;
+let dpr = 1, scale = 1;
+function resize() {
+  const cssW = Math.min(cvs.parentElement.clientWidth, 760);
+  dpr = window.devicePixelRatio || 1; scale = cssW / W;
+  cvs.width = Math.round(cssW * dpr); cvs.height = Math.round(cssW * H / W * dpr);
+  cvs.style.height = (cssW * H / W) + 'px';
+}
+window.addEventListener('resize', resize); resize();
+
+const WASTE = '#9db06f', ATPC = '#ffe98a', CARR = '#57e6c8', CHAN = '#6fb3ff';
+const CY0 = 96, MY0 = 288, MY1 = 312, EY1 = 466;   // cyto / membrane / extracellular
+const VIN = 42, VOUT = 22;
+let circ, sides;
+
+function mkSide(type, x0, x1) {
+  return { type, x0, x1, cxp: (x0 + x1) / 2, lacIn: [], lacOut: [], leak: [], srcT: Math.random() * 0.4, flux: 0, leakT: 1, cps: 0, shuttle: 0, lost: 0 };
+}
+function reset() {
+  circ = false;
+  sides = [mkSide('carrier', 8, 352), mkSide('channel', 368, 712)];
+  document.getElementById('btnCirc').disabled = false;
+}
+function concIn(s) { return s.lacIn.length / VIN; }
+function concOut(s) { return s.lacOut.length / VOUT; }
+function mkDot(x, y, vy) { return { x, y, vx: (Math.random() - .5) * 30, vy: vy || (Math.random() - .5) * 20, head: Math.random() * 6.28 }; }
+
+function step(dt) {
+  for (const s of sides) {
+    // lactate source (equal on both sides)
+    s.srcT -= dt;
+    if (s.srcT <= 0 && s.lacIn.length < 68) { s.srcT = 0.4; s.lacIn.push(mkDot(s.cxp + (Math.random() - .5) * 40, CY0 + 20, 16 + Math.random() * 12)); }
+
+    const cI = concIn(s), cO = concOut(s), grad = cI - cO;
+    let rate;
+    if (s.type === 'carrier') rate = grad > 0 ? Math.min(3.2, 55 * grad) : -Math.min(0.6, 26 * -grad); // slow, saturable, gentle reflux
+    else rate = 26 * grad;                                                                              // channel: fast, linear, no cap, symmetric
+    s.flux += rate * dt;
+    let moved = 0;
+    while (s.flux >= 1 && s.lacIn.length) { exportOne(s); s.flux -= 1; moved++; }
+    while (s.flux <= -1 && s.lacOut.length) { refluxOne(s); s.flux += 1; moved++; }
+    s.cps += (Math.abs(rate) - s.cps) * Math.min(1, dt * 3);
+    if (s.type === 'channel') s.shuttle = 0; else s.shuttle = (s.shuttle + dt * 3) % 1;
+
+    // channel leaks ATP through the open pore
+    if (s.type === 'channel') {
+      s.leakT -= dt;
+      if (s.leakT <= 0 && cI > 0.05) { s.leakT = 1.4; const d = mkDot(s.cxp + (Math.random() - .5) * 30, MY1 + 6, 26 + Math.random() * 20); s.leak.push(d); s.lost++; }
+    }
+
+    moveInside(s, dt); moveOutside(s, dt); moveLeak(s, dt);
+  }
+}
+function exportOne(s) {
+  let bi = -1, bd = 1e9;
+  for (let i = 0; i < s.lacIn.length; i++) { const d = Math.abs(s.lacIn[i].x - s.cxp) + Math.abs(s.lacIn[i].y - MY0); if (d < bd) { bd = d; bi = i; } }
+  if (bi < 0) return;
+  s.lacIn.splice(bi, 1);
+  s.lacOut.push(mkDot(s.cxp + (Math.random() - .5) * 24, MY1 + 6, 20 + Math.random() * 18));
+}
+function refluxOne(s) {
+  let bi = -1, bd = 1e9;
+  for (let i = 0; i < s.lacOut.length; i++) { const d = Math.abs(s.lacOut[i].x - s.cxp) + Math.abs(s.lacOut[i].y - MY1); if (d < bd) { bd = d; bi = i; } }
+  if (bi < 0) return;
+  s.lacOut.splice(bi, 1);
+  s.lacIn.push(mkDot(s.cxp + (Math.random() - .5) * 24, MY0 - 8, -(18 + Math.random() * 14)));
+}
+function contain(p, x0, x1, y0, y1) {
+  if (p.x < x0 + 8) { p.x = x0 + 8; p.vx *= -.5; } else if (p.x > x1 - 8) { p.x = x1 - 8; p.vx *= -.5; }
+  if (p.y < y0 + 6) { p.y = y0 + 6; p.vy *= -.5; } else if (p.y > y1 - 6) { p.y = y1 - 6; p.vy *= -.5; }
+}
+function moveInside(s, dt) {
+  for (const p of s.lacIn) {
+    p.head += (Math.random() - .5) * 3 * dt; p.vx += (Math.cos(p.head) * 9 - p.vx) * .04; p.vy += (Math.sin(p.head) * 9 - p.vy) * .04;
+    if (Math.abs(p.x - s.cxp) < 60 && p.y > MY0 - 70) { p.vx += (s.cxp - p.x) * .012; p.vy += 22 * dt; } // funnel toward transporter
+    p.x += p.vx * dt; p.y += p.vy * dt; contain(p, s.x0, s.x1, CY0, MY0);
+  }
+}
+function moveOutside(s, dt) {
+  const outer = s.type === 'carrier' ? s.x0 : s.x1;   // edge circulation carries lactate off toward
+  const inner = s.type === 'carrier' ? s.x1 : s.x0;   // divider side — always bounces
+  for (let i = s.lacOut.length - 1; i >= 0; i--) {
+    const p = s.lacOut[i];
+    if (circ) { const tgt = s.type === 'carrier' ? -220 : 220; p.vx += (tgt - p.vx) * .08; }
+    else { p.head += (Math.random() - .5) * 3 * dt; p.vx += (Math.cos(p.head) * 8 - p.vx) * .04; }
+    p.vy += (Math.sin(p.head || 0) * 6 - p.vy) * .04;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.y < MY1 + 6) { p.y = MY1 + 6; p.vy *= -.5; } else if (p.y > EY1 - 6) { p.y = EY1 - 6; p.vy *= -.5; }
+    if (circ) {
+      // swept off toward the outer edge and REMOVED — this is what keeps the gradient steep
+      if ((s.type === 'carrier' && p.x < outer - 18) || (s.type === 'channel' && p.x > outer + 18)) { s.lacOut.splice(i, 1); continue; }
+      if (s.type === 'carrier' && p.x > inner - 8) { p.x = inner - 8; p.vx *= -.5; }
+      if (s.type === 'channel' && p.x < inner + 8) { p.x = inner + 8; p.vx *= -.5; }
+    } else {
+      // no circulation: fully bounded box — concentration just builds
+      if (p.x < s.x0 + 8) { p.x = s.x0 + 8; p.vx *= -.5; } else if (p.x > s.x1 - 8) { p.x = s.x1 - 8; p.vx *= -.5; }
+    }
+  }
+}
+function moveLeak(s, dt) {
+  for (let i = s.leak.length - 1; i >= 0; i--) {
+    const p = s.leak[i]; p.vy += 4 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.y > EY1 - 4) { s.leak.splice(i, 1); }
+  }
+}
+
+// ---- draw ----
+function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+function softDot(x, y, r, color, a) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = hexA(color, .5 * a); ctx.beginPath(); ctx.arc(x, y, r + 1.4, 0, 6.28); ctx.fill();
+  ctx.fillStyle = hexA(color, a); ctx.beginPath(); ctx.arc(x, y, r * .55, 0, 6.28); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+}
+function lacDot(x, y) { ctx.fillStyle = hexA(WASTE, .6); ctx.beginPath(); ctx.arc(x, y, 3.2, 0, 6.28); ctx.fill(); ctx.fillStyle = hexA(WASTE, .95); ctx.beginPath(); ctx.arc(x, y, 1.4, 0, 6.28); ctx.fill(); }
+function bar(x, y, w, frac, col) {
+  ctx.fillStyle = 'rgba(255,255,255,0.09)'; ctx.fillRect(x, y, w, 7);
+  ctx.fillStyle = col; ctx.fillRect(x, y, w * Math.min(1, frac), 7);
+}
+
+function drawSide(s) {
+  const accent = s.type === 'carrier' ? CARR : CHAN;
+  ctx.save(); ctx.beginPath(); ctx.rect(s.x0, 0, s.x1 - s.x0, H); ctx.clip();
+
+  // regions + tints
+  ctx.fillStyle = 'rgba(16,26,40,0.7)'; ctx.fillRect(s.x0, CY0, s.x1 - s.x0, MY0 - CY0);
+  ctx.fillStyle = 'rgba(10,15,24,0.92)'; ctx.fillRect(s.x0, MY1, s.x1 - s.x0, EY1 - MY1);
+  ctx.fillStyle = `rgba(122,150,86,${Math.min(0.34, concIn(s) * 0.42)})`; ctx.fillRect(s.x0, CY0, s.x1 - s.x0, MY0 - CY0);
+  ctx.fillStyle = `rgba(122,150,86,${Math.min(0.34, concOut(s) * 0.30)})`; ctx.fillRect(s.x0, MY1, s.x1 - s.x0, EY1 - MY1);
+
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.028)'; ctx.lineWidth = 1;
+  for (let x = s.x0; x <= s.x1; x += 24) { ctx.beginPath(); ctx.moveTo(x, CY0); ctx.lineTo(x, MY0); ctx.moveTo(x, MY1); ctx.lineTo(x, EY1); ctx.stroke(); }
+
+  // membrane with pore/gate
+  ctx.fillStyle = 'rgba(226,196,138,0.85)';
+  const pw = s.type === 'channel' ? 46 : 30, px0 = s.cxp - pw / 2, px1 = s.cxp + pw / 2;
+  ctx.fillRect(s.x0, MY0, px0 - s.x0, MY1 - MY0);
+  ctx.fillRect(px1, MY0, s.x1 - px1, MY1 - MY0);
+  ctx.strokeStyle = 'rgba(20,20,25,0.5)'; ctx.lineWidth = 1;
+  for (let x = s.x0; x <= s.x1; x += 20) { if (x < px0 - 2 || x > px1 + 2) { ctx.beginPath(); ctx.moveTo(x, MY0); ctx.lineTo(x, MY1); ctx.stroke(); } }
+
+  // transporter
+  if (s.type === 'channel') { // open pore: walls, open middle
+    ctx.save(); ctx.shadowColor = CHAN; ctx.shadowBlur = 12; ctx.strokeStyle = CHAN; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(px0, MY0); ctx.lineTo(px0, MY1); ctx.moveTo(px1, MY0); ctx.lineTo(px1, MY1); ctx.stroke(); ctx.restore();
+  } else { // carrier: gate with a shuttling pocket
+    ctx.fillStyle = hexA(CARR, .25); ctx.fillRect(px0, MY0, pw, MY1 - MY0);
+    const sy = MY0 + 4 + (MY1 - MY0 - 8) * (s.shuttle < .5 ? s.shuttle * 2 : (1 - s.shuttle) * 2);
+    ctx.strokeStyle = CARR; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(s.cxp, sy, 5, Math.PI * .2, Math.PI * 1.8); ctx.stroke();
+  }
+
+  // flux arrow (magnitude ~ crossing rate, direction by gradient)
+  const grad = concIn(s) - concOut(s), mag = Math.min(30, Math.abs(grad) * (s.type === 'channel' ? 150 : 90));
+  if (mag > 3) {
+    const dir = grad > 0 ? 1 : -1, ax = s.cxp + (pw / 2 + 22), ay = (MY0 + MY1) / 2;
+    ctx.strokeStyle = accent; ctx.fillStyle = accent; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(ax, ay - dir * mag / 2); ctx.lineTo(ax, ay + dir * mag / 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ax, ay + dir * (mag / 2 + 7)); ctx.lineTo(ax - 4, ay + dir * (mag / 2 - 1)); ctx.lineTo(ax + 4, ay + dir * (mag / 2 - 1)); ctx.closePath(); ctx.fill();
+  }
+
+  // source enzyme icon
+  ctx.fillStyle = 'rgba(150,168,200,0.5)'; ctx.beginPath(); ctx.arc(s.cxp, CY0 + 16, 9, 0, 6.28); ctx.fill();
+
+  // particles
+  for (const p of s.lacOut) lacDot(p.x, p.y);
+  for (const p of s.lacIn) lacDot(p.x, p.y);
+  for (const p of s.leak) softDot(p.x, p.y, 2.2, ATPC, .95);
+
+  // header + bars
+  ctx.fillStyle = accent; ctx.font = '600 14px -apple-system, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(s.type === 'carrier' ? 'CARRIER' : 'CHANNEL', s.x0 + 16, 26);
+  ctx.fillStyle = 'rgba(190,198,210,0.7)'; ctx.font = '11.5px -apple-system, sans-serif';
+  ctx.fillText(s.type === 'carrier' ? 'shuttle · slow · selective' : 'open pore · fast · leaky', s.x0 + 16, 42);
+  ctx.fillStyle = 'rgba(160,168,180,0.75)'; ctx.font = '10px -apple-system, sans-serif';
+  ctx.fillText('inside', s.x0 + 16, 60); bar(s.x0 + 54, 53, 110, concIn(s) * 1.5, '#8fb35a');
+  ctx.fillText('outside', s.x0 + 16, 76); bar(s.x0 + 54, 69, 110, concOut(s) * 1.5, '#8fb35a');
+  ctx.fillStyle = accent; ctx.font = '10px ui-monospace, monospace';
+  ctx.fillText('flux ' + s.cps.toFixed(1) + '/s', s.x0 + 178, 60);
+  if (s.type === 'channel') { ctx.fillStyle = hexA(ATPC, .9); ctx.fillText('ATP lost ' + s.lost, s.x0 + 178, 76); }
+
+  // region labels
+  ctx.fillStyle = 'rgba(214,218,226,0.5)'; ctx.font = '10.5px -apple-system, sans-serif';
+  ctx.fillText('cytoplasm', s.x0 + 16, MY0 - 8); ctx.fillText('extracellular', s.x0 + 16, EY1 - 8);
+  ctx.restore();
+}
+
+function draw() {
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  for (const s of sides) drawSide(s);
+  // divider
+  ctx.fillStyle = '#080b11'; ctx.fillRect(352, 0, 16, H);
+  ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(359, 0, 2, H);
+  // circulation hint
+  if (circ) {
+    ctx.strokeStyle = 'rgba(120,180,235,0.4)'; ctx.lineWidth = 2;
+    const yy = EY1 - 20, off = performance.now() / 10 % 130;
+    for (let k = 0; k < 3; k++) { const bx = 300 - k * 130 - off; if (bx > 14 && bx < 348) { ctx.beginPath(); ctx.moveTo(bx, yy); ctx.lineTo(bx - 16, yy); ctx.stroke(); } }
+    for (let k = 0; k < 3; k++) { const bx = 420 + k * 130 + off; if (bx > 372 && bx < 706) { ctx.beginPath(); ctx.moveTo(bx, yy); ctx.lineTo(bx + 16, yy); ctx.stroke(); } }
+  }
+}
+
+let last = performance.now();
+function frame(now) { let dt = (now - last) / 1000; last = now; if (dt > .05) dt = .05; step(dt); draw(); requestAnimationFrame(frame); }
+
+document.getElementById('btnCirc').addEventListener('click', function () {
+  circ = true; this.disabled = true;
+  document.getElementById('status').innerHTML = 'With circulation holding the outside empty, the channel\'s speed finally pays off — it keeps the inside near-spotless, much faster than the carrier can. An open pore is the right tool <b>only</b> when you can guarantee the gradient never reverses. Otherwise its speed just means it refluxes and leaks that much faster.';
+});
+document.getElementById('btnReset').addEventListener('click', function () {
+  reset(); document.getElementById('status').innerHTML = 'Same lactate load on both sides. The <b>channel</b> (right) is an open pore — it dumps lactate out in a torrent, far faster than the <b>carrier</b> (left), which shuttles one at a time. But watch the outside fill: with nowhere to go, the fast channel just races to equilibrium and starts refluxing, and it leaks ATP through its open pore. Speed without control.';
+});
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

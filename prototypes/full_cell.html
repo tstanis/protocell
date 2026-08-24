@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The whole cell</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080b11; color: #d6dae2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 18px 16px 26px; }
+  .hud { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    padding: 11px 16px; margin-bottom: 12px; background: #0d1420;
+    border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; }
+  .stat { display: flex; align-items: baseline; gap: 8px; }
+  .stat .k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #99a2b1; }
+  .stat .v { font: 700 24px ui-monospace, monospace; font-variant-numeric: tabular-nums; min-width: 42px; }
+  .v.atp { color: #ffe98a; text-shadow: 0 0 14px rgba(255,224,120,0.4); }
+  .v.atp.low { color: #ff7a7a; }
+  .v.am { color: #7fd8c0; }
+  .v.lac { color: #b3c39a; }
+  .sep { width: 1px; align-self: stretch; background: rgba(255,255,255,0.09); }
+  .meter { display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+  .meter .mk { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #99a2b1; }
+  .tbar { height: 9px; border-radius: 5px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  .tbar > i { display: block; height: 100%; width: 0%; background: #6fbf6a; border-radius: 5px; transition: width .12s, background .2s; }
+  .stage { width: 100%; border-radius: 14px; overflow: hidden; background: #080b11; border: 1px solid rgba(255,255,255,0.06); }
+  canvas { display: block; width: 100%; }
+  .controls { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 13px; color: #d6dae2; background: #161d29;
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; padding: 8px 13px; cursor: pointer;
+    transition: background .15s, border-color .15s, opacity .15s; }
+  button:hover:not(:disabled) { background: #1e2836; border-color: rgba(255,255,255,0.22); }
+  button:disabled { opacity: .36; cursor: default; }
+  button.done { border-color: rgba(126,231,154,0.5); color: #9fe8b0; }
+  .status { margin-top: 12px; font-size: 12.5px; color: #8891a0; min-height: 2.6em; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hud">
+    <div class="stat"><span class="k">ATP</span><span class="v atp" id="atpv">55</span></div>
+    <div class="sep"></div>
+    <div class="stat"><span class="k">Amino acids</span><span class="v am" id="amv">0</span></div>
+    <div class="stat"><span class="k">Lactate</span><span class="v lac" id="lacv">0</span></div>
+    <div class="sep"></div>
+    <div class="meter"><span class="mk">Membrane tension</span><div class="tbar"><i id="tbar"></i></div></div>
+  </div>
+  <div class="stage"><canvas id="c"></canvas></div>
+  <div class="controls">
+    <button id="b1">1 · Glucose channel</button>
+    <button id="b2">2 · Glycolysis enzyme</button>
+    <button id="b3">3 · Amino-acid transporter</button>
+    <button id="b4">4 · Lactate carrier</button>
+    <button id="bleb" disabled>Bleb (shed volume)</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div class="status" id="status">A bare cell: membrane, nucleus, and you — the nanobot — with a small ATP reserve that is already draining, because staying alive costs energy every second. Start by importing food.</div>
+</div>
+
+<script>
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const W = 720, H = 560;
+let dpr = 1, scale = 1;
+function resize() {
+  const cssW = Math.min(cvs.parentElement.clientWidth, 780);
+  dpr = window.devicePixelRatio || 1; scale = cssW / W;
+  cvs.width = Math.round(cssW * dpr); cvs.height = Math.round(cssW * H / W * dpr);
+  cvs.style.height = (cssW * H / W) + 'px';
+}
+window.addEventListener('resize', resize); resize();
+
+const cx = 360, cy = 280, R = 150, MT = 15;
+const A_REST = Math.PI * R * R, B_OSM = 150, S_NOM = 177, LP = 1.6, STIFF = 7, RUPTURE = 0.30;
+const GLU = '#ffb03a', AM = '#3bd6b4', ATPC = '#ffe98a', LAC = '#9db06f';
+const enzC = { x: 424, y: 236 }, pocket = { x: 424, y: 216 };
+const nucC = { x: 300, y: 330 }, nucR = 50;
+const WIN = 0.34;
+const T = { glu: Math.PI, amino: 0, lac: Math.PI / 2 }; // face angles: left / right / bottom
+
+let atp, atpDisp, parts, atpPool, floats, built, enzyme, t, health, bot;
+let A, Rc, tension, stretch, dead;
+
+function reset() {
+  atp = 55; atpDisp = 55;
+  parts = []; atpPool = []; floats = [];
+  built = { glu: false, enzyme: false, amino: false, lac: false };
+  enzyme = { free: true, bound: null, bindT: 0 };
+  t = 0; health = 1;
+  A = A_REST; Rc = R; tension = 0; stretch = 0; dead = false;
+  bot = { x: cx + 30, y: cy - 40, tx: cx + 30, ty: cy - 40, wait: 0, rot: 0 };
+  for (let i = 0; i < 42; i++) parts.push(mkOut('glu'));
+  for (let i = 0; i < 30; i++) parts.push(mkOut('amino'));
+  for (let i = 0; i < 27; i++) atpPool.push(mkFloat(nearEnz()));
+  ['b1','b2','b3','b4'].forEach(id => { const b = document.getElementById(id); b.disabled = false; b.classList.remove('done'); });
+  document.getElementById('bleb').disabled = true;
+}
+
+function memR(a) {
+  const o = 0.02 + 0.05 * health;
+  const lazy = o * (Math.sin(3 * a + 0.7 * t) * 0.9 + Math.sin(5 * a - 0.5 * t) * 0.6 + Math.sin(2 * a + 1.1 * t) * 0.4);
+  const tremor = tension * 0.014 * Math.sin(9 * a + t * 7); // taut, high-freq quiver under tension
+  return Rc * (1 + lazy * (1 - 0.5 * tension) + tremor);
+}
+function angDiff(a, b) { let d = Math.abs(a - b) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; }
+function nearEnz() { return { x: enzC.x + (Math.random() - .5) * 60, y: enzC.y + (Math.random() - .5) * 60 }; }
+
+function mkOut(type) {
+  const base = T[type], a = base + (Math.random() - 0.5) * 1.5, d = (Rc || R) + 22 + Math.random() * 120;
+  return { type, state: 'out', x: cx + Math.cos(a) * d, y: cy + Math.sin(a) * d, vx: 0, vy: 0, head: Math.random() * 6.28, r: type === 'glu' ? 3.2 : 2.3 };
+}
+function mkFloat(pos) { return { x: pos.x, y: pos.y, vx: (Math.random() - .5) * 20, vy: (Math.random() - .5) * 20, ph: Math.random() * 6.28 }; }
+function floatText(txt, x, y, c) { floats.push({ txt, x, y, life: 1, c }); }
+function countIn(type) { return parts.filter(p => p.type === type && p.state === 'in').length; }
+
+function lyse() {
+  dead = true; health = 0.2; tension = 1;
+  for (const p of parts) if (p.state === 'in') { p.state = 'out'; const a = Math.atan2(p.y - cy, p.x - cx); p.vx = Math.cos(a) * (80 + Math.random() * 120); p.vy = Math.sin(a) * (80 + Math.random() * 120); }
+  for (const p of atpPool) { const a = Math.atan2(p.y - cy, p.x - cx); p.vx = Math.cos(a) * (80 + Math.random() * 120); p.vy = Math.sin(a) * (80 + Math.random() * 120); }
+  document.getElementById('bleb').disabled = true;
+  document.getElementById('status').textContent = 'LYSED. Trapped lactate raised the internal osmolarity, water flooded in, the cell swelled past what the membrane could hold, and it burst. This is why the lactate carrier is life support, not cleanup.';
+}
+function deadDrift(dt) {
+  for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= .99; p.vy *= .99; if (p.x < -20 || p.x > W + 20 || p.y < -20 || p.y > H + 20) parts.splice(i, 1); }
+  for (const p of atpPool) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= .99; p.vy *= .99; }
+  for (let i = floats.length - 1; i >= 0; i--) { const f = floats[i]; f.y -= 26 * dt; f.life -= dt * .9; if (f.life <= 0) floats.splice(i, 1); }
+}
+function bleb() {
+  if (dead || tension < 0.55) return;
+  // pinch off a vesicle: shed a chunk of solute and volume, relieving tension
+  const lac = parts.filter(p => p.type === 'lac' && p.state === 'in');
+  for (let k = 0; k < lac.length * 0.55; k++) parts.splice(parts.indexOf(lac[k]), 1);
+  A *= 0.80;
+  floatText('bleb!', cx, cy - Rc * 0.7, '#ffd27a');
+}
+
+function step(dt) {
+  t += dt;
+
+  // ---- osmosis & volume: internal solute pulls in water, swelling the cell ----
+  const solute = countIn('glu') + countIn('amino') + countIn('lac') + atpPool.length + B_OSM;
+  const Aosm = A_REST * solute / S_NOM;              // volume at which inside osmolarity matches outside
+  if (!dead) {
+    const resist = 1 + STIFF * Math.max(0, A / A_REST - 1); // membrane resists expansion (nearly inextensible)
+    A += (Aosm - A) * Math.min(1, LP * dt) / resist;
+    Rc = Math.sqrt(A / Math.PI);
+    stretch = Rc / R - 1;
+    tension = Math.max(0, Math.min(1, stretch / RUPTURE));
+    if (stretch >= RUPTURE) lyse();
+    document.getElementById('bleb').disabled = tension < 0.55;
+  } else {
+    A += (A_REST * 1.5 - A) * Math.min(1, 0.4 * dt); // relax the burst husk
+    Rc = Math.sqrt(A / Math.PI);
+  }
+  const tb = document.getElementById('tbar');
+  tb.style.width = (tension * 100) + '%';
+  tb.style.background = tension > 0.8 ? '#e2504a' : tension > 0.5 ? '#e0a020' : '#6fbf6a';
+
+  if (dead) { deadDrift(dt); return; }
+
+  // energy economy: staying alive drains ATP; enzyme produces it
+  atp -= 1.8 * dt;
+  if (atp < 0) atp = 0;
+  health = Math.max(0.2, Math.min(1, atp / 16));
+  const mo = health;
+
+  // enzyme: crack an interior glucose -> ATP + lactate
+  if (built.enzyme) {
+    // find/bind glucose inside (wide reach so it doesn't sit starved)
+    if (enzyme.free) {
+      let best = null, bd = 1e9;
+      for (const p of parts) if (p.type === 'glu' && p.state === 'in') { const d = (p.x - pocket.x) ** 2 + (p.y - pocket.y) ** 2; if (d < bd) { bd = d; best = p; } }
+      if (best) { enzyme.free = false; enzyme.bound = best; enzyme.bindT = 0; }
+    }
+    if (enzyme.bound) {
+      const g = enzyme.bound;
+      g.x += (pocket.x - g.x) * 0.32; g.y += (pocket.y - g.y) * 0.32;
+      enzyme.bindT += dt;
+      if (enzyme.bindT > 0.28) {
+        parts.splice(parts.indexOf(g), 1);
+        atp += 2; floatText('+2', pocket.x + 22, pocket.y, '#8ef0a6');
+        parts.push({ type: 'lac', state: 'in', x: pocket.x, y: pocket.y + 8, vx: (Math.random() - .5) * 30, vy: 20, head: Math.random() * 6.28, r: 3 });
+        enzyme.free = true; enzyme.bound = null;
+      }
+    }
+  }
+
+  // particles
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    // exported lactate: drift out the bottom and get swept away
+    if (p.type === 'lac' && p.state === 'out') {
+      p.vy += 26 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+      if (p.y > H - 6) { parts.splice(i, 1); }
+      continue;
+    }
+    const ang = Math.atan2(p.y - cy, p.x - cx), dist = Math.hypot(p.x - cx, p.y - cy);
+    const outerR = memR(ang), innerR = outerR - MT;
+
+    // motion character
+    if (p.type === 'glu') { p.head += (Math.random() - .5) * 28 * dt * mo; const sp = 16 * mo; p.vx += (Math.cos(p.head) * sp - p.vx) * .06; p.vy += (Math.sin(p.head) * sp - p.vy) * .06; }
+    else if (p.type === 'amino') { p.vx += (Math.random() - .5) * 95 * dt * mo; p.vy += (Math.random() - .5) * 95 * dt * mo; p.vx *= .86; p.vy *= .86; }
+    else { p.head += (Math.random() - .5) * 3 * dt; p.vx += (Math.cos(p.head) * 8 * mo - p.vx) * .04; p.vy += (Math.sin(p.head) * 8 * mo - p.vy) * .04; }
+
+    if (p.state === 'out') {
+      // import at the matching transporter, down-gradient (free)
+      const tr = p.type; // 'glu' or 'amino'
+      const canImport = built[tr] && angDiff(ang, T[tr]) < WIN && !(tr === 'amino' && countIn('amino') >= 40);
+      if (canImport && dist < outerR + 70) { const pull = 130 * mo; p.vx += (cx - p.x) / dist * pull * dt * 4; p.vy += (cy - p.y) / dist * pull * dt * 4; }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      const na = Math.atan2(p.y - cy, p.x - cx), nd = Math.hypot(p.x - cx, p.y - cy), no = memR(na);
+      if (nd < no - MT && canImport) { p.state = 'in'; parts.push(mkOut(tr)); } // crossed; replenish outside medium
+      else if (nd < no && !(canImport && angDiff(na, T[tr]) < WIN)) { const push = (no - nd) + 1; p.x += Math.cos(na) * push; p.y += Math.sin(na) * push; p.vx *= -.3; p.vy *= -.3; }
+      if (nd > Rc + 150) { parts[i] = mkOut(p.type); }
+    } else { // inside
+      if (p.type === 'glu' && built.enzyme && enzyme.bound !== p) { p.vx += (enzC.x - p.x) * .022; p.vy += (enzC.y - p.y) * .022; } // drift to enzyme
+      if (p.type === 'lac' && built.lac) { // funnel to bottom carrier and export
+        if (angDiff(ang, T.lac) < WIN + 0.2) { p.vy += 30 * dt; p.vx += (cx - p.x) * .002; }
+      }
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      const na = Math.atan2(p.y - cy, p.x - cx), nd = Math.hypot(p.x - cx, p.y - cy), no = memR(na);
+      if (nd > no - MT) {
+        if (p.type === 'lac' && built.lac && angDiff(na, T.lac) < WIN) { p.state = 'out'; } // exported
+        else { const push = (nd - (no - MT)) + 1; p.x -= Math.cos(na) * push; p.y -= Math.sin(na) * push; p.vx *= -.3; p.vy *= -.3; }
+      }
+    }
+  }
+
+  // ATP pool reconciled to atp/2 (made at enzyme, consumed everywhere)
+  const target = Math.max(0, Math.round(atp / 2));
+  while (atpPool.length < target) atpPool.push(mkFloat(built.enzyme ? nearEnz() : { x: cx + (Math.random() - .5) * 120, y: cy + (Math.random() - .5) * 120 }));
+  while (atpPool.length > target) atpPool.splice((Math.random() * atpPool.length) | 0, 1);
+  for (const p of atpPool) {
+    p.vx += (Math.random() - .5) * 140 * dt; p.vy += (Math.random() - .5) * 140 * dt; p.vx *= .85; p.vy *= .85;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.ph += dt * 10;
+    const a = Math.atan2(p.y - cy, p.x - cx), d = Math.hypot(p.x - cx, p.y - cy), inr = memR(a) - MT - 2;
+    if (d > inr) { p.x = cx + Math.cos(a) * inr; p.y = cy + Math.sin(a) * inr; p.vx *= -.4; p.vy *= -.4; }
+  }
+
+  // nanobot
+  const dx = bot.tx - bot.x, dy = bot.ty - bot.y, dd = Math.hypot(dx, dy);
+  if (dd < 4) { bot.wait -= dt; if (bot.wait <= 0) { const a = Math.random() * 6.28, d = Math.random() * (Rc - MT - 55); bot.tx = cx + Math.cos(a) * d; bot.ty = cy + Math.sin(a) * d; bot.wait = 0.5; } }
+  else { const sp = 44 * dt * (0.4 + 0.6 * mo); bot.x += dx / dd * sp; bot.y += dy / dd * sp; bot.rot += dt * 1.3; }
+
+  for (let i = floats.length - 1; i >= 0; i--) { const f = floats[i]; f.y -= 26 * dt; f.life -= dt * .9; if (f.life <= 0) floats.splice(i, 1); }
+
+  // HUD
+  atpDisp += (atp - atpDisp) * Math.min(1, dt * 9);
+  const av = document.getElementById('atpv'); av.textContent = Math.round(atpDisp); av.classList.toggle('low', atp < 12);
+  document.getElementById('amv').textContent = countIn('amino');
+  document.getElementById('lacv').textContent = countIn('lac');
+}
+
+// ---- draw ----
+function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+function softDot(x, y, r, color, a) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = hexA(color, .5 * a); ctx.beginPath(); ctx.arc(x, y, r + 1.4, 0, 6.28); ctx.fill();
+  ctx.fillStyle = hexA(color, a); ctx.beginPath(); ctx.arc(x, y, r * .55, 0, 6.28); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+}
+function memPath(scaleIn) { ctx.beginPath(); for (let i = 0; i <= 150; i++) { const a = i / 150 * 6.28, r = memR(a) - (scaleIn || 0); const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r; if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.closePath(); }
+
+function draw() {
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.026)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 24) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += 24) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  // outside concentration zones
+  const zg = ctx.createRadialGradient(70, cy, 15, 70, cy, 190); zg.addColorStop(0, 'rgba(255,176,58,0.13)'); zg.addColorStop(1, 'rgba(255,176,58,0)'); ctx.fillStyle = zg; ctx.fillRect(0, 0, W, H);
+  const za = ctx.createRadialGradient(W - 70, cy, 15, W - 70, cy, 190); za.addColorStop(0, 'rgba(59,214,180,0.13)'); za.addColorStop(1, 'rgba(59,214,180,0)'); ctx.fillStyle = za; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(214,218,226,0.7)'; ctx.font = '12px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('Glucose', 66, 30); ctx.fillText('Amino acids', W - 70, 30); ctx.fillText('(outside)', 66, 46); ctx.fillText('(outside)', W - 70, 46);
+
+  // outside particles
+  for (const p of parts) if (p.state === 'out' && p.type !== 'lac') softDot(p.x, p.y, p.r, p.type === 'glu' ? GLU : AM, .9);
+  for (const p of parts) if (p.type === 'lac' && p.state === 'out') { ctx.fillStyle = hexA(LAC, .6); ctx.beginPath(); ctx.arc(p.x, p.y, 3.2, 0, 6.28); ctx.fill(); ctx.fillStyle = hexA(LAC, .95); ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 6.28); ctx.fill(); }
+
+  // cytoplasm fill + lactate green tint (clipped inside)
+  ctx.save(); memPath(MT); ctx.clip();
+  ctx.fillStyle = health > .5 ? 'rgba(38,60,82,0.72)' : 'rgba(60,52,50,0.7)'; ctx.fill();
+  const lacFrac = Math.min(0.32, countIn('lac') / A * 1900); if (lacFrac > 0.003) { ctx.fillStyle = `rgba(122,150,86,${lacFrac})`; ctx.fillRect(cx - Rc, cy - Rc, Rc * 2, Rc * 2); }
+  ctx.restore();
+
+  // membrane band — colour shifts toward strained red under tension, breaks on lysis
+  const tan = [226, 196, 138], red = [226, 80, 74];
+  const mr = Math.round(tan[0] + (red[0] - tan[0]) * tension), mg = Math.round(tan[1] + (red[1] - tan[1]) * tension), mb = Math.round(tan[2] + (red[2] - tan[2]) * tension);
+  if (dead) {
+    ctx.lineWidth = MT; ctx.strokeStyle = 'rgba(200,80,74,0.55)';
+    for (let i = 0; i < 32; i++) { if (i % 3 === 0) continue; const a0 = i / 32 * 6.28, a1 = (i + 1) / 32 * 6.28; ctx.beginPath(); for (let k = 0; k <= 6; k++) { const a = a0 + (a1 - a0) * k / 6, r = memR(a) - MT / 2; const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r; if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.stroke(); }
+  } else {
+    memPath(MT / 2); ctx.lineWidth = MT; ctx.strokeStyle = health > .5 ? `rgba(${mr},${mg},${mb},0.85)` : 'rgba(150,140,120,0.7)'; ctx.stroke();
+  }
+  // tiles
+  ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(20,20,25,0.45)';
+  for (let i = 0; i < 64; i++) { const a = i / 64 * 6.28, r = memR(a), c = Math.cos(a), s = Math.sin(a); ctx.beginPath(); ctx.moveTo(cx + c * r, cy + s * r); ctx.lineTo(cx + c * (r - MT), cy + s * (r - MT)); ctx.stroke(); }
+
+  // transporters
+  function drawTr(key, color, label, on) {
+    const base = T[key];
+    ctx.save(); if (on) { ctx.shadowColor = color; ctx.shadowBlur = 13; ctx.strokeStyle = color; } else ctx.strokeStyle = 'rgba(120,130,145,0.35)';
+    ctx.lineWidth = MT + 2; ctx.lineCap = 'round'; ctx.beginPath();
+    for (let i = 0; i <= 12; i++) { const a = base - WIN + i / 12 * WIN * 2, r = memR(a) - MT / 2, x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r; if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+    ctx.stroke(); ctx.restore();
+    if (on) { const r = memR(base) + 24, x = cx + Math.cos(base) * r, y = cy + Math.sin(base) * r; ctx.fillStyle = hexA(color, .9); ctx.font = '10.5px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(label, x, y); }
+  }
+  drawTr('glu', GLU, 'glucose channel', built.glu);
+  drawTr('amino', AM, 'amino transporter', built.amino);
+  drawTr('lac', LAC, 'lactate carrier', built.lac);
+
+  // nucleus
+  ctx.beginPath(); for (let i = 0; i <= 70; i++) { const a = i / 70 * 6.28, r = nucR * (1 + 0.04 * Math.sin(4 * a + t * 0.8)); const x = nucC.x + Math.cos(a) * r, y = nucC.y + Math.sin(a) * r; if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.closePath();
+  ctx.fillStyle = 'rgba(120,104,220,0.28)'; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(182,168,255,0.7)'; ctx.stroke();
+  ctx.fillStyle = 'rgba(210,200,255,0.5)'; for (let i = 0; i < 5; i++) { const a = i * 1.3 + t * 0.2, d = 9 + (i % 3) * 11; ctx.beginPath(); ctx.arc(nucC.x + Math.cos(a) * d, nucC.y + Math.sin(a) * d, 1.6, 0, 6.28); ctx.fill(); }
+  ctx.fillStyle = 'rgba(200,188,255,0.85)'; ctx.font = '11px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('nucleus', nucC.x, nucC.y + nucR + 14);
+
+  // enzyme
+  if (built.enzyme) {
+    const g = ctx.createRadialGradient(enzC.x, enzC.y, 4, enzC.x, enzC.y, 28); g.addColorStop(0, 'rgba(150,168,200,0.32)'); g.addColorStop(1, 'rgba(150,168,200,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(enzC.x, enzC.y, 28, 0, 6.28); ctx.fill();
+    const off = [[-14,-8],[-2,-14],[10,-11],[15,2],[6,12],[-8,11],[-15,3]]; const cols = ['#9b8cff','#3bd6b4','#3bd6b4','#ff7eb0','#5bb8ff','#3bd6b4','#7ee787'];
+    for (let i = 0; i < off.length; i++) { ctx.fillStyle = cols[i]; ctx.beginPath(); ctx.arc(enzC.x + off[i][0], enzC.y + off[i][1], 5.5, 0, 6.28); ctx.fill(); }
+    ctx.strokeStyle = enzyme.free ? 'rgba(255,176,58,0.6)' : 'rgba(255,255,255,0.5)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pocket.x, pocket.y, 7, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.fillStyle = 'rgba(190,200,220,0.8)'; ctx.font = '10.5px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('glycolysis enzyme', enzC.x, enzC.y + 32);
+  }
+
+  // inside particles
+  for (const p of parts) if (p.state === 'in' && p.type === 'lac') { ctx.fillStyle = hexA(LAC, .6); ctx.beginPath(); ctx.arc(p.x, p.y, 3.2, 0, 6.28); ctx.fill(); ctx.fillStyle = hexA(LAC, .95); ctx.beginPath(); ctx.arc(p.x, p.y, 1.4, 0, 6.28); ctx.fill(); }
+  for (const p of parts) if (p.state === 'in' && p.type === 'glu') softDot(p.x, p.y, p.r, GLU, .95);
+  for (const p of parts) if (p.state === 'in' && p.type === 'amino') softDot(p.x, p.y, p.r, AM, .95);
+  for (const p of atpPool) softDot(p.x, p.y, 2.1, ATPC, 0.6 + 0.4 * Math.sin(p.ph));
+
+  // nanobot
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = 'rgba(90,170,240,0.2)'; ctx.beginPath(); ctx.arc(bot.x, bot.y, 14, 0, 6.28); ctx.fill(); ctx.restore();
+  ctx.save(); ctx.translate(bot.x, bot.y); ctx.rotate(bot.rot);
+  ctx.fillStyle = 'rgba(206,230,255,0.95)'; ctx.strokeStyle = 'rgba(120,185,235,0.9)'; ctx.lineWidth = 1.4;
+  ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = i / 6 * 6.28, x = Math.cos(a) * 7.5, y = Math.sin(a) * 7.5; if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); } ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(58,108,168,0.9)'; ctx.beginPath(); ctx.arc(0, 0, 2.2, 0, 6.28); ctx.fill(); ctx.restore();
+
+  // floats
+  ctx.textAlign = 'center'; ctx.font = '600 12px ui-monospace, monospace';
+  for (const f of floats) { ctx.globalAlpha = f.life; ctx.fillStyle = f.c; ctx.fillText(f.txt, f.x, f.y); ctx.globalAlpha = 1; }
+}
+
+let last = performance.now();
+function frame(now) { let dt = (now - last) / 1000; last = now; if (dt > .05) dt = .05; step(dt); draw(); requestAnimationFrame(frame); }
+
+const msg = {
+  glu: 'Glucose channel placed on the face pointing at the glucose zone. It flows in for free, down its gradient — but raw glucose is not energy yet. Build the enzyme to crack it.',
+  enzyme: 'Glycolysis online: the enzyme cracks each glucose into 2 ATP (+ lactate). ATP stops falling and starts climbing — the cell is now self-sustaining.',
+  amino: 'Amino-acid transporter online — building material now stockpiles inside the cytoplasm, waiting for a ribosome to turn it into proteins.',
+  lac: 'Lactate carrier placed on the bottom face — waste flows out down its gradient, internal osmolarity drops, water leaves, and the swollen cell deflates back to a safe size. This carrier is structural life support, not just cleanup.'
+};
+function wire(id, key) {
+  document.getElementById(id).addEventListener('click', function () {
+    built[key] = true; this.disabled = true; this.classList.add('done');
+    document.getElementById('status').textContent = msg[key];
+  });
+}
+wire('b1', 'glu'); wire('b2', 'enzyme'); wire('b3', 'amino'); wire('b4', 'lac');
+document.getElementById('bleb').addEventListener('click', bleb);
+document.getElementById('reset').addEventListener('click', function () {
+  reset(); document.getElementById('status').textContent = 'A bare cell: membrane, nucleus, and you — the nanobot — with a small ATP reserve that is already draining, because staying alive costs energy every second. Start by importing food.';
+});
+
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

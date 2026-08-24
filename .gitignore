@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output. `tsc --build` and vite regenerate all of this; committing it would put a
+# second copy of every source file in the tree and make every diff twice as long.
+dist/
+*.tsbuildinfo
+
+# Local agent settings: permission grants with machine-absolute paths, useful to nobody else.
+.claude/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets — none exist today, and this is here so that stays true by default.
+.env
+.env.*
+*.pem
+*.key
