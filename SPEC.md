@@ -121,23 +121,15 @@ Instead: the membrane tile **mediates flux between its inner (cytoplasm) neighbo
 
 Each membrane tile needs a **normal** pointing toward its cytoplasm neighbor (so a pump knows which way is "out"). The local rule is cheap; the only fiddly case is corner tiles with cytoplasm on two sides — exactly the geometry stressed during growth and division. Prototype that case in isolation.
 
-#### 4.2a Not every membrane tile is a gate — BUILT, and this was wrong above
+#### 4.2a Not every membrane tile is a gate
 
-The paragraph above names the corner case as *ambiguous normals*, and implies every ring tile has one. **It does not, and the exception is not small.**
+§4.2's annulus is one tile thick *radially*, which rasterises to a wall **two tiles thick along the diagonals** — and the inner tile there touches cytoplasm on both sides, so it is buried wall, not a gate.
 
-§4.1's ring is the annulus `radius-1 < d ≤ radius` — one tile thick *radially*. On a square lattice that rasterizes to a wall genuinely **two tiles thick along the diagonals**, and the buried tile of each doubled stretch touches fluid on *neither* side. It has no inward neighbor and no outward neighbor, so it cannot mediate anything. Measured on §4.1's default cell: **20 of 108 tiles, 18.5% of the ring**, in four clusters at the diagonal shoulders.
+On the §4.1 cell that is **20 of 108 ring tiles: 18.5% cannot host anything.**
 
-Leaving those unoriented and skipping them in transport is correct — an unoriented wall is still a wall. The damage was entirely in what got built on top of the assumption that the ring was uniform:
+A gate tile is one with fluid on **both** sides — `gateTiles()` is the authority, and the client is sent that list rather than inferring it. Seating anything elsewhere is refused with a reason. Before this, a flagellum was correctly rejected there while a transporter was *accepted and silently transported nothing*, which is the worse failure: about one deployment click in five landed on dead wall.
 
-- The client highlighted all 108 tiles as legal deployment sites, so roughly **one placement click in five** landed on a tile that could host nothing.
-- `deploy` checked orientation only for flagella. A flagellum was refused there (correctly, but with an opaque message); a **transporter was accepted, drawn, and reported as a success — and then transported nothing, ever, with no feedback of any kind.** Against §12.3's finding that placement beats count, a silently inert carrier is the most expensive lie this game can tell.
-- The wire test covering that exact path deliberately chose the *farthest* membrane tile, which is one of the dead ones. **The test asserted the bug and passed.**
-
-So "gate" is now a first-class concept rather than an implicit property: `isGateTile` / `gateTiles` in the sim, `gateTiles` on the wire beside `membraneTiles`, and the client highlights and snaps to that list only. `deploy` refuses non-gate tiles for *every* product, and refusals now carry the sim's own reason string to the player instead of a generic sentence that guessed.
-
-`faceTiles` filters to gate tiles too. That is a **measured no-op** for the intro: §12's three faces are cardinal, the dead tiles are diagonal, and all three already selected 13 live tiles. Verified deliberately rather than assumed, because changing effective membrane area is precisely what silently re-tunes the economy — it is the mechanism behind both regressions recorded in §10A.5.
-
-The general lesson, and it is the same one §2.1 keeps teaching: **a derived property that is true for most elements of a set will be assumed true for all of them.** If the sim knows which tiles are special, it has to *say so* on the wire, not leave each consumer to rediscover it.
+> A boundary defined by geometry and a boundary defined by *what it touches* are not the same set, and the difference is where things silently stop working.
 
 ### 4.3 Compartments nest
 The compartment model is recursive: extracellular space *contains* the cell, cytoplasm *contains* the nucleus (nuclear envelope), organelles have their own walls. Every boundary is a membrane with its own permeability vector; every enclosed volume carries its own concentrations. This same structure scales up to organs tapping the bloodstream — compartments inside compartments, membranes all the way down.
@@ -203,243 +195,121 @@ Managed species (each gets a distinct visual signature — see §12). Budget ~6�
 
 ---
 
-## 5a. Discrete matter: what the player handles is countable — BUILT (residues SUPERSEDED by §5b)
+## 5a. Discrete matter: what the player handles is countable
 
-§5 lists species; §2.1 makes the field the truth and dots the costume. That is correct physics, and playtesting found it illegible in a specific, measurable way: *"the amino acids and the lactate and glucose are overwhelming… let's focus on fewer actual particles that are tracked and the user can interact with directly."*
+A field is correct physics and was illegible: on a mid-game cell glycine ran **0.0389 mean against 0.0392 max** — perfectly flat — while the renderer spent 436 dots depicting it. A field cannot be counted, pointed at, or picked up.
 
-The measurement behind the complaint is stark. On a representative mid-game cell, glycine's interior concentration ran **0.0389 mean against 0.0392 max** — perfectly flat. The renderer was spending 436 of its ~1,400 dots depicting a quantity with no spatial structure whatsoever. A field cannot be counted, cannot be pointed at, and cannot be picked up.
+So the species the player handles are **particles**: real simulation entities with a persistent `id`, a position and a quantity. The renderer draws them because they are what there is.
 
-So the species the player handles are now **grains**: real simulation entities with a persistent `id`, a position, and a quantity. The renderer draws grains because grains are what there is.
+> §2.1's *"numbers are truth, visuals are costume"* protects against the renderer lying about the simulation. It says nothing about whether the simulation is modelling at a grain the player can act on. **A perfectly truthful field nobody can point at is still the wrong representation.**
 
 ### 5a.1 The split, and why it is not arbitrary
 
 | representation | species | why |
 |---|---|---|
-| **grains** | glucose, lactate, the five residues | matter the player imports, spends, carries, and is blocked by |
-| **field** | ATP, water, O₂, CO₂ | ATP is a *charge on the cytoplasm*, not an object in a satchel; the gases and water are nobody's inventory |
+| **particles** | glucose, lactate | matter whose position gates something — an enzyme reaches for it, a carrier exports from where it sits |
+| **inventory** | the five residues | a stock, not a place; see §5b |
+| **field** | ATP, water, O₂, CO₂ | ATP is a *charge on the cytoplasm* (§5c); the gases and water are nobody's inventory |
 
-Grains live **inside the cell only.** The extracellular medium stays a continuum because §2.5 already models it as a boundary condition rather than as state (`bathRate = Infinity` — an effectively infinite, well-stirred bath), and §11.3a already draws it as tint rather than dots. Import mints a grain at the membrane; export consumes one and returns its quantity to the bath.
+Particles live **inside the cell only.** The extracellular medium stays a continuum because §2.5 models it as a boundary condition rather than as state (`bathRate = Infinity`, a well-stirred bath). Import mints one at the membrane; export consumes one and returns it to the bath.
 
-There is **no interior field for a discrete species** — not even a derived projection. A parallel copy would be a second copy of the truth, and two copies drift. `World.interiorAmount(species)` is the single accessor, because reading the grid for a discrete species returns a silent zero that looks exactly like an empty cell.
+There is **no interior field for a discrete species**, not even a derived projection — a parallel copy is a second copy of the truth, and two copies drift. `World.interiorAmount()` is the single accessor, because reading the grid for a discrete species returns a silent zero that looks exactly like an empty cell.
 
-### 5a.2 This resolves the tension between "few particles" and "real gradients"
-
-Fewer particles means less gradient, and §17's SA:V wall rests on penetration depth `L = √(2Dc₀/k)` being a smooth, measurable quantity. Those pull against each other — but only if grain size is fixed relative to the cell.
-
-It is not. Grain **count** scales with the amount of matter, which scales with volume. The intro cell holds ~10 glucose grains and is countable; a cell at the necrosis knee holds hundreds and recovers a genuine gradient. **Legible when small, continuous when big, with no switch to throw.**
+Count scales with the amount of matter, which scales with volume, so the intro cell is countable and a large one recovers a genuine gradient. **Legible when small, continuous when big, with no switch to throw.**
 
 ### 5a.3 Diffusion by random walk is not an approximation
 
-The diffusion equation is the continuum *limit* of a random walk, so moving grains by random steps is the microscopically truthful version of what `ops/diffuse.ts` does to a field — not a cheaper stand-in for it. For a 2D walk with per-axis steps of standard deviation σ over dt:
+The diffusion equation is the continuum *limit* of a random walk, so moving particles by random steps is the microscopically truthful version of what `ops/diffuse.ts` does to a field. For a 2D walk with per-axis steps of standard deviation σ over dt:
 
 ```
 ⟨r²⟩ = 2σ²   and   ⟨r²⟩ = 4·D·dt   ⇒   σ = sqrt(2·D·dt)
 ```
 
-drawn from the **same `DIFFUSION` table** the field uses, so both reproduce the same `D`. That is what keeps §13 and §17 comparable across the change rather than silently re-tuned, and it is asserted directly: 4,000 walkers reproduce `⟨r²⟩ = 4Dt` to within 15%.
+drawn from the **same `DIFFUSION` table** the field uses, so both reproduce the same `D` and §13/§17 stay comparable across the change. Asserted directly: 4,000 walkers reproduce `⟨r²⟩ = 4Dt` to within 15%.
 
-Grains **reflect** off the boundary rather than clamping to it. Clamping piles matter onto the wall exactly where transport reads its gradient — the discrete cousin of the absorbing-sink bug §17.2 cost a rebuild.
+Particles **reflect** off the boundary rather than clamping to it. Clamping piles matter onto the wall exactly where transport reads its gradient — the discrete cousin of the absorbing-sink bug §17.2 cost a rebuild.
 
-### 5a.4 Grain units, and the reaction you can now watch — SUPERSEDED by §5d
-
-*This section described a per-species conversion (`GRAIN_UNIT`: 4 for glucose and lactate, 2 for residues) between the parcel drawn on screen and the molecules inside it. It is gone; see §5d. The one part that outlived it is the reaction:*
-
-Glucose and lactate share a unit on purpose. §8.1's `LACTATE_PER_GLUCOSE = 2` means one glucose particle yields **exactly two lactate particles.** §11.3e had already given glucose a hexagon (a hexose) and lactate a triangle (a triose) as a visual pun; at one unit it stops being a pun and becomes literally true. **The player watches one hexagon become two triangles.** The C6 → 2×C3 split is a thing you see, not a constant you read.
-
-### 5a.5 Quantisation is where conservation goes to die
-
-Two places where rounding would silently leak or conjure matter, both handled explicitly:
-
-- **Minting carries the remainder.** A channel delivering a third of a grain per tick must produce a grain every third tick — not zero forever (which starves the cell) and not one per tick (which conjures matter). `mint()` returns the remainder and every caller accumulates it.
-- **Taking splits the last grain.** A bead is 2.0 and a bond is 0.25, so without splitting seven eighths of every residue would be permanently unreachable.
-
-### 5a.6 The satchel — matter becomes logistics
-
-Construction draws residues from the nanobot's satchel and **nowhere else**. Before grains, a bond siphoned a quarter-unit out of whatever happened to be within radius 4, so matter was ambient and the player never touched their own supply chain. Now a bead must be picked up before it can be bonded, and §9.2's blocking case stops being a line of text and becomes a trip.
-
-Capacity is **8**, deliberately small: a big satchel turns the decision back into ambience.
-
-Beads the current build needs are **scooped automatically when the bot passes within reach**; beads it does not need are left alone, so the satchel never silently fills with glycine while you are trying to fetch a lysine. A click per bead was considered and rejected on inspection — a 14-residue protein would be fourteen round trips, which is busywork rather than logistics. This keeps the part that is a real decision (you must walk to where the lysine actually *is*, and the satchel is finite) and drops the part that is only clicking. Explicit click-to-pick-up remains, for taking anything else.
-
-### 5a.7 What this cost, and what it did not
-
-Transport, metabolism, osmosis, and construction all stopped being concentration arithmetic. The **law** did not change: `applyGrainTransport` is a separate pass from `applyTransport`, but both compute flux through the same `fluxOf` — which is what lets §6.1 be asserted once and bind for both representations.
-
-One genuinely new concept was forced. **Interior concentration must be sensed over a radius, not point-sampled.** With ~16 glucose grains over 896 interior tiles, the specific tile behind any membrane patch is empty almost always — so a point sample reads zero, infers an enormous gradient, and imports without limit. `SENSE_RADIUS = 5` averages over ~80 tiles: stable at intro scale, still local enough to resolve a real gradient in a large cell. The same applies to enzymes, which now reach `ENZYME_REACH = 3` for substrate; a tile-local enzyme would starve while holding a full larder.
-
-**§12's arc survives unchanged**, which was the thing most at risk. Two prior changes to effective membrane area silently re-tuned the economy and lysed the cell on an arc it had always survived (§10A.5), and a change of representation is a far bigger lever than either of those. Measured:
-
-| beat | ATP | glucose grains | lactate grains | tension |
-|---|---|---|---|---|
-| 20 s bare | 220 → 188 | 0 | 0 | 0.03 |
-| + glucose channel | 188 → 139 | 10 | 0 | 0.09 |
-| + 3 enzymes | 139 → 259 | 4 | 44 | 0.32 |
-| + lactate carrier | 259 → 386 | 2 | 20 | 0.12 |
-
-ATP falls bare, keeps falling with only a channel (raw glucose is not energy), turns around once enzymes exist, waste piles up and swells the cell to tension 0.32, and the carrier relieves it. No lysis. **85 grains at rest, peaking at 133** — against ~1,400 dots before.
-
-The general lesson, and it is §2.1 arriving from the other side: *"numbers are truth, visuals are costume"* protects against the renderer lying about the simulation. It says nothing about whether the simulation is modelling at a grain the player can act on. A perfectly truthful field that no one can point at is still the wrong representation.
-
-### 5a.8 A thing you must catch cannot outrun you — BUILT
-
-Making matter countable created a problem that no amount of correct physics could solve, and playtesting named it in one line: *"really hard to see which amino acid is which… and they move around so quickly you can't go get them."*
-
-**The arithmetic was damning.** `BOT_SPEED` is 9 tiles/s. At the residues' tabulated `D = 8`, a bead nets `sqrt(4·D·t)` = **5.7 tiles of drift per second**, and its actual jitter path runs about **44 tiles/s**. The nanobot could not catch one, and chasing it looked frantic rather than alive. The physics was right and the game was unplayable — §5a had turned a background quantity into an object the player must physically reach, and nothing in the diffusion table knows that.
-
-The rule, stated so it generalises past this case:
+### 5a.8 A thing you must catch cannot outrun you
 
 > **Anything the player must walk to and collect cannot move faster than the player.**
 
-**Which species get slowed is decided by who handles them**, and that turns out to be the principled line rather than a fudge:
+`BOT_SPEED` is 9 tiles/s. At the residues' tabulated `D = 8` a bead netted 5.7 tiles/s of drift on a jitter path of ~44 tiles/s — uncatchable, and chasing it looked frantic rather than alive.
 
-| | handled by | drift |
-|---|---|---|
-| glucose, lactate | **machinery** — a transporter mints them at the membrane, an enzyme reaches for them; nothing chases anything | `×1`, untouched |
-| the five residues | **the player**, on foot | `×0.05` |
+Which species are slowed is decided by **who handles them.** Glucose and lactate are handled by machinery and keep their `D` untouched, because glucose crossing the interior to reach an enzyme *is* §17's penetration depth and slowing it would blunt the SA:V wall.
 
-Glucose's `D` is left exactly alone because it is load-bearing: glucose must cross the interior to reach an enzyme, and *that traverse is §17's penetration depth*. Slowing it would re-tune the economy and blunt the SA:V wall — the same class of silent re-tuning that §10A.5 records lysing the cell.
+The rule outlived its own use case — §5b removed the mechanic that needed it — and is kept because the next collectible thing will need it.
 
-Measured after the change: a bead nets **0.45 tiles/s against the bot's 9**, and a bead 5.8 tiles away is collected in **0.3 s**. Still visibly in thermal motion — §11.7's rule that in this game stillness means death applies to a bead as much as to a membrane.
+**Shape, not colour, tells them apart.** One family shape with five hues put the whole discriminating burden back on colour, the exact failure it was introduced to fix. Each residue has its own mark, saying something true where possible: **gly** a circle (side chain is a single hydrogen), **ala** a square, **val** a diamond (β-branched), **leu** a pentagon (bulkiest aliphatic here), **lys** a **plus** — positively charged at physiological pH, so the mark *is* the chemistry. Lysine is the one you never confuse, which matters because §12.3's squeeze is a lysine squeeze.
 
-**Be honest about what this constant is.** There is a real physical story available: a bead is a packet of molecules rather than a monomer, and Stokes–Einstein gives `D ∝ 1/radius`, so an aggregate genuinely diffuses slower. It is a true story and it is *not the reason*. The reason is that this quantity became something the player must catch. §13's discipline is that every constant carries the argument that produced it — and that has to include the arguments that are "the game needs this", or the discipline quietly becomes a way of dressing up decisions as derivations.
+### 5a.9 Discrete when position carries information; continuous when it does not
 
-**Shape, not colour, tells them apart.** §11.3e gave the residues one family shape and five hues, which put the whole discriminating burden back on colour — the exact failure shape was introduced to fix. Each residue now has its own mark, chosen to say something true where possible: **gly** a circle (the simplest residue — its side chain is a single hydrogen), **ala** a square, **val** a diamond (β-branched), **leu** a pentagon (bulkiest of the aliphatics here), and **lys** a **plus** — positively charged at physiological pH, so the mark *is* the chemistry. Lysine is the one you never confuse, which matters because §12.3's squeeze is a lysine squeeze. Hovering any grain names it and reports what it is worth in peptide bonds.
+Residues were made objects, then made catchable, and still failed — playtested as *"finding an amino acid is an impossible task, or sometimes a magical one where they are just around and you don't know why."*
 
-### 5a.9 Residues are a POOL, not objects — the mechanic was removed, not tuned
+**The second half is the damning one.** "Impossible" is a difficulty problem and could be tuned. "Sometimes magical, for reasons you cannot see" is not a mechanic at all, and no value of any constant fixes it.
 
-Playtest, after §5a.8 had made the beads catchable:
-
-> *"It is impossible for a player to reason about where concentrations of amino acids are… the representation of them as particles does not play out… finding an amino acid is an impossible task, or sometimes a magical one where they are just around and you don't know why. Fundamentally I think we should abandon the concentration aspect of amino acids for the purpose of pickup — sure it is useful for movement and gradients, but it is failing as a gameplay mechanic."*
-
-**The second half of that sentence is the damning one.** "Impossible" is a difficulty problem and could be tuned. "Sometimes a magical one where they are just around and you don't know why" is not: a mechanic that occasionally hands you what you need for reasons you cannot see is not a mechanic, it is noise that intermittently rewards you. No value of any constant fixes that.
-
-**What was actually wrong.** Both previous answers failed, in opposite directions:
-
-| | what it did | how it failed |
-|---|---|---|
-| draw from radius 4 | siphoned a quarter-unit from whatever was nearby | the supply chain was ambient and invisible — it just happened |
-| require a pickup (§5a.6) | the bead had to be carried to the build | visible and *impossible*: five species of small drifting object in a crowded cytoplasm cannot be told apart or predicted |
-
-§5a.8 slowed the beads from 5.7 tiles/s to 0.45 and made them **catchable**. It did nothing about **findable**, because the problem was never speed. Two rounds of tuning went in before the answer turned out to be that residues should not have been objects at all. That is the general lesson and it is worth more than the fix:
-
-> **A legibility problem will not yield to a tuning fix if the representation itself is wrong.**
-
-**The resolution.** Residues go back to being a field, and §9.2 draws them **from the whole cell** rather than from a radius or a satchel. Position stops gating anything. Measured: an 8-residue enzyme assembles in **4.9 s while parked at the far wall**, never moving.
-
-This is defensible as physics as well as necessary as design, which is the ideal case. At `D = 8` across an 18-tile cell the interior equilibrates in roughly ten seconds, against an arc measured in minutes — **the cytoplasm really is well mixed on the timescale that matters**, so a well-stirred compartment is the correct model and not a concession.
-
-**The split, restated so it is a rule rather than a list:**
+> **A legibility problem will not yield to a tuning fix if the representation itself is wrong.** Two rounds of tuning went in before the answer turned out to be that residues should not have been objects.
 
 > **Discrete when position carries information. Continuous when it does not.**
 
-An enzyme reaches for glucose; a carrier exports from the face it sits on; §17's entire SA:V wall is about glucose failing to reach the middle of a large cell. Position is load-bearing for those. For a residue, the only thing true about it is *how many the cell has* — so it is a stock, and §9.2's blocking case becomes **"you are out of lysine, import more"**, which is a supply decision, rather than **"go and find a lysine"**, which was a scavenger hunt in a shaken box.
+For a residue the only thing true about it is *how many the cell has*, so it is a stock (§5b) and §9.2's blocking case becomes **"you are out of lysine, import more"** — a supply decision rather than a scavenger hunt in a shaken box. This is defensible as physics too: at `D = 8` across an 18-tile cell the interior equilibrates in ~10 s against an arc measured in minutes, so the cytoplasm really is well mixed on the timescale that matters.
 
-**§4.7's texture claim is not abandoned — it moved.** Gathering no longer leaves a visible hole in the residue field, because consumption is proportional across every tile. It still leaves one in **ATP**, which is drawn from `DRAW_RADIUS_ATP` and always will be, because a local energy brownout is a genuinely spatial event (§2.3).
+**§4.7's texture claim moved rather than died.** Gathering leaves no hole in a residue pool, but it still leaves one in **ATP**, drawn from `DRAW_RADIUS_ATP`, because a local energy brownout is a genuinely spatial event (§2.3).
 
-**Rendering follows.** Residues are `dots: false` — tint only. A uniform wash is the honest depiction of a well-mixed pool, and drawing them as dots would rebuild the exact problem §5a was written to solve: 436 dots depicting a field measured at 0.0389 mean against 0.0392 max, saying nothing while implying there is somewhere to go. Their legend swatches are drawn hollow so the picture does not promise an object you could walk to.
+### 5a.10 The amino transporter carries the residue you chose
 
-### 5a.10 The amino transporter now carries the residue you chose
+`GENES.aminoTransporter.product.species` was hard-coded, so every amino transporter any player ever built was a **glycine** channel. §5 says "rare types gate rare proteins" and §12.3 deliberately squeezes lysine — so the game created the exact situation the rule exists to create and then withheld the only response to it.
 
-Same playtest: *"are the amino acid channels specific to the acid type? Doesn't seem to be a way to select which acid."*
+A gene may be marked `selectableResidue`; the choice is made **at the nucleus**, riding with the blueprint, so which residue it carries is part of what you built rather than decided at the wall. With §6.7's finite real estate, importing all five types genuinely costs five gate tiles.
 
-They were specific — permanently and invisibly, to **glycine**. `GENES.aminoTransporter.product.species` was hard-coded, so every amino transporter any player ever built was a glycine channel.
+### 5a.11 A typed bill of materials needs a typed map
 
-That made §5's central claim unplayable. §5 says "recipes are bills of materials of specific types; **rare types gate rare proteins**", and §12.3 deliberately squeezes lysine — but a cell starved of lysine had no way to build a lysine importer. The game created the exact situation the rule exists to create, and then withheld the only response to it.
+All five residue deposits were originally at the same coordinate — one undifferentiated blob — so *there was no such place as "where the glycine is"*. "Go and get gly" was not difficult, it was impossible.
 
-A gene may now be marked `selectableResidue`, and the choice is made **at the nucleus**, riding along with the blueprint request, so which residue it carries is part of what you built rather than something decided at the wall. It is captured in `BuildState.residue` at blueprint time and read at deploy. Combined with §6.7's finite membrane real estate, importing all five types genuinely costs five gate tiles — which is the decision §6.7 has been describing all along.
+> §5 gave the game a **typed bill of materials** and left it an **untyped map**. Whenever a mechanic types a resource, check the *world* is typed to match — otherwise the specificity exists only in the cost, never in the answer.
 
-### 5a.11 A typed bill of materials needs a typed map — BUILT
+Each residue now has its own location, distance and direction, ordered so scarcity and distance agree: gly and ala are common and close, val and lys scarce and far. Each deposit is drawn with that residue's shape (§11.3e), its name and what is left, with an edge compass for off-screen ones that brightens for whatever the current build is blocked on.
 
-Playtest, after §5a.9 had made residues a pool: *"but you can't even see them any more… there needs to be some visualization that allows me to 'go get gly' and know what I'm looking for and have a payoff when I find it and get it."*
+**This settles §10A.6**, which had failed to find a reason to move by looking at the energy economy — ATP sits at its ceiling regardless:
 
-§5a.9 was right that residues should not be objects **inside** the cell. It was incomplete, because removing the (broken) acquisition mechanic left nothing in its place: residues became a number that only ever went down. The loop needs a *destination*, and the destination belongs **outside**, where §10A already wants a reason to move.
+> **The reason to travel is not energy, it is materials.** Glucose is everywhere; lysine is somewhere. Exploration is motivated by a resource you cannot substitute, not one you merely want more of.
 
-Three things were structurally wrong, and the first is the one worth remembering.
+## 5b. Building material is an INVENTORY, not chemistry
 
-**1. All five residue deposits were at the same coordinate.** `intro()` placed gly, leu, lys, ala and val at exactly `(cx + 40, cy)` with identical radius and peak — a single undifferentiated amino blob. So *there was no such place as "where the glycine is"*. "Go and get gly" was not difficult, it was **impossible**: every residue was in the same spot, so no journey could ever be about one of them.
+Amino acids were modelled four ways — concentration field, collectable grains, field again, field retuned — and each fix addressed the previous symptom while none touched the cause.
 
-> §5 gave the game a **typed bill of materials** and left it an **untyped map**. A shortage named a bead the world could not distinguish. Whenever a mechanic types a resource, check that the *world* is typed to match — otherwise the specificity exists only in the cost, never in the answer.
-
-Each residue now has its own location, distance and direction, ordered so scarcity and distance agree: gly and ala are common and close, val and lys are scarce and far. The map is drawn in the same vocabulary the bill of materials asks in — each deposit marked with that residue's shape (§11.3e), its name, and how much is left — with an edge compass for off-screen deposits that brightens and reports its distance for whatever the current build is *blocked on*.
-
-**2. The starting stock was ~30× the actual bill.** Measured: `gly 45, leu 40, lys 26, ala 32, val 26` against a real cost of `gly 2.0, leu 1.5, lys 1.75, ala 1.25, val 1.0` for the four intro proteins — good for **60 enzymes or 34 lactate carriers**. The blocking case could never fire, so every mechanic downstream of it (the typed transporter, the deposits, the reason to travel) was unreachable code in gameplay terms.
-
-The cause was a stale comment claiming those proteins cost "gly 10, leu 9, lys 8" — figures predating `RESIDUE_UNIT = 0.25` and about 5× too high, which is how the stock came to be sized. Now `6 / 5 / 3.5 / 4 / 3.5`: the full arc — four intro proteins, §12.3's second lactate carrier, and a flagellum — completes with lysine falling 3.5 → 1.00, so the squeeze lands exactly where §12.3 wants it.
-
-**3. Depletion could not span two species.** One global rate cannot serve glucose (imported at ~3.5 units/s, should last minutes) and a residue (~0.1 units/s, should be a finite haul of a dozen units); tuned for one, the other is either evaporating or inexhaustible. It was the latter — a deposit handed over **200 units in a minute and barely dimmed**.
-
-Patches now carry a **`reserve`**, and depletion is `taken / reserve`. That says the honest thing — *this deposit contains this much, and taking it empties it* — and it is a number the player can be shown.
-
-**Measured loop**, one transporter aimed at the gly deposit 60 tiles out:
-
-| | gly stock | deposit |
-|---|---|---|
-| 2 min at home | 6.00 → **5.45** | 100% |
-| 1 min on the deposit | → 6.82 | 89% |
-| 5 min on the deposit | → **10.76** | **57%** |
-
-The first row is not a bug: a channel left open away from its deposit **exports**, because §6.1's channels are symmetric. Gating it (§6.3) becomes a real decision rather than a footnote.
-
-**This also settles §10A.6**, which had failed to find a reason to move by looking at the energy economy — ATP sits at its ceiling regardless, so no amount of patch tuning made leaving necessary. That was the wrong axis:
-
-> **The reason to travel is not energy, it is materials.** Glucose is everywhere; lysine is somewhere. Exploration is motivated by a resource you cannot substitute, not by one you merely want more of — which is the ore-patch structure this game's lineage runs on, and it wants specific places on a map.
-
-## 5b. Building material is an INVENTORY, not chemistry — BUILT
-
-Amino acids were modelled four ways before this one. The sequence is worth keeping, because each fix addressed the previous symptom and none of them touched the cause:
-
-| version | model | how it failed |
-|---|---|---|
-| §5 | concentration field, drawn as dots | 436 dots of a quantity measuring 0.0389 mean against 0.0392 max — flat, and saying nothing |
-| §5a | discrete grains you collect | *"finding an amino acid is an impossible task, or sometimes a magical one where they are just around and you don't know why"* |
-| §5a.9 | field again, drawn cell-wide | invisible: 6 units over 896 tiles is 0.0067, which renders as almost nothing |
-| §5a.11 | same, retuned and relabelled | *"still incredibly broken. nothing is visible."* |
-
-**The diagnostic that ended it.** To answer *"can the player see their glycine?"* required computing that 6 units over 896 tiles is a concentration of 0.0067, which at a dot-scale of 0.25 with a per-tile dither yields 23 dots — and then checking whether that survived a change of zoom. It did not: dot count scaled with the number of *frame cells*, so pulling the camera out made residues vanish super-linearly.
+**The diagnostic that ended it.** Answering *"can the player see their glycine?"* required computing that 6 units over 896 tiles is a concentration of 0.0067, which at a dot-scale of 0.25 with a per-tile dither yields 23 dots — and then checking whether that survived a change of zoom. It did not.
 
 > **If "how many do I have" requires arithmetic, the model is wrong.**
 
-Concentration is the right primitive for a quantity whose *gradient does work* — glucose crossing a cell, lactate backing up behind a carrier, everything §17's SA:V wall is made of. It is the wrong primitive for a bill of materials. Four rounds of tuning went into the costume before the primitive itself was questioned.
+Concentration is the right primitive for a quantity whose *gradient does work* — glucose crossing a cell, lactate backing up behind a carrier, everything §17's SA:V wall is made of. It is the wrong primitive for a bill of materials.
 
 ### 5b.1 The model
 
 **A residue is an integer you own.** No volume, no diffusion, no position, no per-species scale constant, and nothing that changes when the camera moves. `lys: 14` means you can place fourteen more lysines — `RESIDUES_PER_BOND` is 1, so the number on screen *is* the number of bonds remaining. It lives in a HUD strip, not in the world, so it cannot become illegible.
 
-Blueprints show have-against-need per type and turn red on the one blocking you, which is what answers the other half of the complaint: *"random amino acids now show up for building."* The bill was always typed; nothing on screen had ever said which type you were short of until assembly stalled.
+Blueprints show have-against-need per type and turn red on the one blocking you. The bill was always typed; nothing on screen had ever said which type you were short of until assembly stalled.
 
 ### 5b.2 Transporters became inserters
 
-With no field there is no flux, so a residue transporter is not a channel. **In range of its deposit it pulls whole residues at a rate, and the deposit counts down.** No gradient, no equilibrium, no concentration.
-
-Rate scales with how strongly that deposit reaches the cell and with what is left in it, so both §6.7's placement decision and §10A.2's reason-to-move survive intact without any chemistry. Measured, one transporter, glycine:
-
-| | gly | deposit |
-|---|---|---|
-| 60 s at home | 24 → 24 | 100% |
-| 1 min on the deposit | → 38 | 65% |
-| 3 min on the deposit | → 54 | 26% |
-
-Diminishing returns fall out of depletion rather than being scripted.
+With no field there is no flux, so a residue transporter is not a channel. **In range of its deposit it pulls whole residues at a rate, and the deposit counts down.** No gradient, no equilibrium, no concentration. Rate scales with how strongly the deposit reaches the cell and with what is left in it, so §6.7's placement decision and §10A.2's reason-to-move both survive without any chemistry, and diminishing returns fall out of depletion rather than being scripted.
 
 ### 5b.3 A destination you cannot see is a rumour
 
-The deposits were placed by scarcity alone — 60 to 132 tiles out, so that distance and rarity would agree. **The visible window is the 96×96 grid centred on the cell: about ±48 tiles.** Every deposit was permanently off-screen, and naming them, sizing them and giving them a compass were all decoration on something that could never be looked at.
+Deposits were originally placed by scarcity alone, 60–132 tiles out. **The visible window is ±48 tiles**, so every one of them was permanently off-screen, and naming them, sizing them and giving them a compass were all decoration on something that could never be looked at.
 
-They are now placed from the viewport outwards: gly 39, ala 42, leu 45 — visible at the default zoom, so the mechanic teaches itself — and val 81, lys 82 beyond the edge, which is what the compass and the flagellum are for.
+They are placed from the viewport outwards: gly, ala and leu visible at the default zoom so the mechanic teaches itself, val and lys beyond the edge, which is what the compass and the flagellum are for.
 
 > **Place things relative to what is on screen, then check.** A layout argued from the fiction alone will happily put the whole mechanic outside the frame.
 
 ### 5b.4 What this keeps and what it costs
 
-**Kept:** typed bills of materials (§5), the blocking case (§9.2), finite membrane real estate with one type per transporter (§6.7), deposits that deplete (§10A.2), and materials as the reason to travel (§10A.6, §5a.11) — glucose is everywhere, lysine is somewhere.
+**Kept:** typed bills of materials (§5), the blocking case (§9.2), finite membrane real estate with one type per transporter (§6.7), deposits that deplete (§10A.2), and materials as the reason to travel (§10A.6, §5a.11).
 
 **Lost, and recorded rather than hidden:** residues no longer contribute to osmotic pressure. §7.2 makes volume a function of total solute, and building material dissolved in cytoplasm genuinely pushes water. It was a small term beside lactate and §12's crisis is a lactate crisis, so the trade is worth making — but it is a trade, not a free win.
 
-**The general lesson**, which is the one to carry into the rest of §14:
-
 > Model a quantity as a **field** when its gradient is the mechanic, and as an **item** when its count is the mechanic. Getting this backwards cannot be fixed by tuning the renderer, and every attempt to do so will look like progress.
 
-### 5b.5 Imports arrive as PARTICLES, and pile up — BUILT
+### 5b.5 Imports arrive as PARTICLES, and pile up
 
 §5b made residues a count, which fixed legibility and broke something else: *"the gly acids just seem to go directly into my inventory… there are no particles to pick up."* A number that increments on its own is not a loop. The transporter you placed had no visible output, nothing happened anywhere, and the supply line had no physical existence at all.
 
@@ -472,7 +342,7 @@ walk there:  inventory 32,  waiting 0
 
 Collection is automatic within `PICKUP_REACH` rather than click-per-item. The trip is the mechanic; forty individual clicks would be an interface.
 
-### 5b.6 One idiom for everything that comes in: the PORT — BUILT
+### 5b.6 One idiom for everything that comes in: the PORT
 
 Playtest: *"we should use the same particle dynamics for glucose… it is much easier to understand."*
 
@@ -487,7 +357,7 @@ Two bugs fell out of the conversion and both were invisible from the inside:
 - **Only one deposit per species ever worked.** The import loop used `.find()`, which returns the FIRST patch of that species. Glucose has three; a player who swam to the richer one 95 tiles out and parked on it got nothing, because range was still being measured to a patch on the far side of the map. Selection is now by best *reach* — distance against each deposit's own harvest radius. The navigation fallback had the identical bug.
 - **Depletion counted parcels, not quantity.** A glucose grain is four units, so deposits lasted four times as long as their `reserve` claimed.
 
-### 5b.8 …and one for everything that leaves: the EXTRACTOR — BUILT
+### 5b.8 …and one for everything that leaves: the EXTRACTOR
 
 The mirror image. A lactate carrier consumes waste grains within `EXPORT_REACH` and sends them out; it does not read a gradient.
 
@@ -500,7 +370,7 @@ Two calibrations, both discovered by measuring:
 
 **The membrane now runs three idioms, and each needs its own words.** Calling a port "at equilibrium" is not a wording slip, it is the wrong concept — a port is in range or it is not, and an extractor is keeping up or it is not. Neither has an equilibrium. The client says `drawing 0.87 glucose/s from the deposit — 87% remaining`, or `OUT OF RANGE — 41 tiles beyond reach, swim closer`, or `exporting 3.2 lactate/s`.
 
-### 5c ATP is a LEVEL, not a shape — BUILT
+### 5c ATP is a LEVEL, not a shape
 
 ATP was a per-tile concentration. That bought §2.3's local brownouts and §4.7's "building somewhere flat stalls you" — both real ideas — and cost the same legibility every other field cost: *how much energy do I have here* had a different answer everywhere, none of which the HUD could show.
 
@@ -512,7 +382,7 @@ Capacity moved 448 → 502, because the pool is now sized against interior **plu
 
 **What this gives up, stated rather than hidden:** local brownouts, and with them §4.7's energy texture. Position still matters for everything made of MATTER — an enzyme must be where glucose reaches it, a carrier where waste reaches it, a transporter facing its deposit — so §4.7's principle keeps a body. It just no longer applies to energy.
 
-### 5d ONE UNIT: the particle — BUILT
+### 5d ONE UNIT: the particle
 
 Playtested verdict, and it is the whole section: *"what the hell is particles vs. molecules vs. grains vs. residues — this is WAY too complicated. Simplify to one unit."*
 
@@ -522,24 +392,13 @@ The HUD was quoting **grains**, **particles**, **molecules**, **units** and **re
 
 Nothing on screen moved. Every rate was divided by exactly what the parcel used to hold, and deposit reserves were rescaled to match, so counts and behaviour are identical.
 
-#### 5d.1 This was not a cosmetic problem — it was a bug factory
+#### 5d.1 Two units for one substance is a class of bug, not a wording problem
 
-Three defects in one session were the same mismatch, each hiding behind a plausible number:
+Five separate defects were the same mismatch, each hiding behind a plausible number: a flux label that understated glucose fourfold; depletion counting parcels against a reserve measured in molecules; an import throttle comparing parcels to a molecule capacity; `ENZYME_BIND_TIME` left per-molecule while its call site went per-particle, running the enzyme **4× too fast** (28.6 ATP/s against 7.14); and `S_NOM = A_REST`, which looked like a law and was a unit coincidence, quartering the osmotic load so **§12.3's swelling crisis stopped arriving**.
 
-- **The flux label** reported grains/s under a word that read as molecules, understating glucose delivery fourfold. `(drawing 0.5 glucose/s from this channel)… but it definitely isn't producing at that rate.`
-- **Depletion accounting** counted parcels against a reserve measured in molecules, so glucose deposits lasted four times as long as their own reserve claimed.
-- **The import throttle** compared a parcel count against a molecule capacity.
+Both survivors were caught by tests comparing a measured rate against its own derived constant — never by inspection, because both sides of a wrong comparison are individually reasonable numbers.
 
-**Two units for the same substance is not a readability problem, it is a class of bug** — and the class is silent, because both sides of a wrong comparison are individually reasonable numbers.
-
-#### 5d.2 Two more of them were still hiding, and only a balance test found them
-
-The collapse itself left two 4× errors, both in constants that had *no number visibly wrong with them*:
-
-- **`ENZYME_BIND_TIME`** stayed 0.28 s per *molecule* while its call site (`ENZYME_BIND_TIME * held`) lost the multiplier that made it per-parcel. A single enzyme cracked **3.4 particles/s against a design ceiling of 0.893** and grossed **28.6 ATP/s against 7.14**. `ATP_PER_GLUCOSE` and `LACTATE_PER_GLUCOSE` had both been converted, so the yield *per crack* stayed right and only the RATE was wrong — nothing looked out of place in a snapshot. Now 1.12 s per particle.
-- **`S_NOM = A_REST`** looked like a law and was a unit coincidence: 1.0 molecule per unit volume × 1000 tiles² is 1000 molecules, and 1000 was also the area. In particles the same cell counts a quarter as many things, so the osmotic load fell 4× and **§12.3's swelling crisis stopped arriving** — volume idled at 819 against a rupture threshold of 896 on an arc that had always ballooned. Now `A_REST / 4`, which leaves `B_OSM / S_NOM` and therefore every §7 relationship bit-for-bit unchanged.
-
-Both were caught by tests asserting a measured rate against its own derived constant, not by inspection. **A constant defined as equal to another constant is not thereby safe from a change of units** — `S_NOM = A_REST` survived precisely because it had no digits in it to look wrong.
+> **A constant defined as equal to another constant is not thereby safe from a change of units.** `S_NOM = A_REST` survived precisely because it had no digits in it to look wrong.
 
 ## 6. Transport (the three tiers)
 
@@ -718,78 +577,64 @@ The failure worth remembering is how it presented. The on-screen label said "car
 - **Punctuation**: AUG = "start" (also codes Met, so proteins begin with Met); UAA/UAG/UGA = "stop" (code nothing → release the protein). The message is self-delimiting, like a data packet with header and terminator.
 - **tRNA = the physical lookup table**: a two-ended adapter with an anticodon on one end and its amino acid on the other. The ribosome doesn't "understand" the code — it ratchets along the mRNA and matching tRNAs base-pair in and drop off their amino acid. The code is enforced by the *set of tRNAs*.
 
-### 9.4 Proteins denature — BUILT
+### 9.4 Proteins denature
 
-*The code has referred to denaturation as §9.4 and the ribosome as §9.5 since they were written; these headings now exist. The two aspirational sections that held these numbers are §9.6 and §9.7.*
+§9.5's ribosome retires hand-assembly, and on its own that is only a convenience: a full build-out is about fifteen proteins and then you are finished forever. **Production lines exist because demand recurs.**
 
-§9.5's ribosome retires hand-assembly, and on its own that is only a convenience: a full build-out is about fifteen proteins and then you are finished forever. A factory over a finite job is a shortcut, not a factory. **Production lines exist because demand recurs.**
-
-So every protein carries an `integrity` that falls over time; at zero it stops working and has to be replaced. That is what turns §5b's supply chain — deposits, ports, hoppers, an inventory — from a one-time errand into something the cell must keep doing, which is §2.3's thesis applied to structure rather than to energy.
+Every protein carries an `integrity` that falls over time; at zero it stops working and must be replaced. That turns §5b's supply chain from a one-time errand into something the cell must keep doing — §2.3's thesis applied to structure rather than energy.
 
 ```
 MEAN_LIFETIME  240 s     the only timescale in the mechanic
 FRAILTY        0.4–1.7   per-protein, hashed from its identity (§3.7 needs replay)
 STRESS_FACTOR  6         multiplier at maximum stress
 STRESS_ONSET   0.6       below this tension, stress is ZERO
-REPAIR_AT      0.25      where `efficiency` starts to taper — see §9.5
+REPAIR_AT      0.25      where `efficiency` starts to taper — see §9.5a
 ```
 
-**It is a consequence, not a tax.** Decay is driven mostly by stress — membrane tension (§7.3) and brownout (§2.3) — so a well-run cell replaces proteins slowly and a struggling one sheds them fast, and a failing cell gets a death spiral it can see coming: swelling strains the carriers, losing carriers means more swelling.
+**It is a consequence, not a tax.** Decay is driven mostly by stress — membrane tension (§7.3) and brownout (§2.3) — so a well-run cell replaces proteins slowly and a struggling one sheds them fast, giving a failing cell a spiral it can see coming: swelling strains the carriers, losing carriers worsens the swelling.
 
-Four findings, each of which cost a rebuild:
+Four constraints, each of which cost a rebuild to find:
 
-- **A half-life of a VALUE is not a half-life to an EVENT.** The first version decayed `integrity` exponentially toward a 0.02 failure threshold with a 720 s half-life — which takes 5.6 half-lives, so nothing failed for 68 minutes and a ten-minute measurement saw zero attrition. It is a plain linear countdown now, so the number means what it says and `integrity` reads directly as "fraction of working life left".
-- **Stress must have an onset.** At `tension × 0.8` a cell at a perfectly ordinary tension of 0.42 already decayed three times faster and lost its enzymes at 80 s instead of 240. Measured, ATP climbed healthily to 467 and then the cell collapsed — and it read as *the ribosome being broken* rather than as an osmotic problem. Below STRESS_ONSET decay is a plain clock you can plan around; above it you are in §12.3's crisis and losing machinery is part of what that crisis IS.
-- **A narrow frailty spread is a cliff, not a mechanic.** A player builds their infrastructure in one burst, so at ±25% everything expires together: measured, all six proteins and all three ribosomes failed inside a single minute at the seven-minute mark, and the repair bill arrived exactly when production was at its lowest. At 0.4–1.7 the same burst fails over roughly ten minutes, so attrition is a stream the cell can service rather than a bill it cannot.
-- **Ribosomes do not denature (§9.5a).** They are the only thing that can replace a ribosome, so mortality gave the network no floor: any run of bad luck that took them all out was unrecoverable, and over a long enough game that run always comes. Raising protein lifetime from 7 to 30 minutes did not change it, which is what marks it structural rather than tuning. Automation, once earned, stays earned — at the cost of the symmetry that everything the cell folds can be lost.
+- **A half-life of a VALUE is not a half-life to an EVENT.** Exponential decay toward a 0.02 failure threshold takes 5.6 half-lives — nothing failed for 68 minutes. It is a plain linear countdown, so `integrity` reads directly as "fraction of working life left".
+- **Stress must have an onset.** Ramping from the first drop of swelling made an ordinary tension of 0.42 decay 3× faster, killing enzymes at 80 s instead of 240 — and it read as the *ribosome* being broken rather than as an osmotic problem. Below `STRESS_ONSET` decay is a plain clock you can plan around; above it you are in §12.3's crisis and losing machinery is part of what that crisis IS.
+- **A narrow frailty spread is a cliff, not a mechanic.** Infrastructure is built in one burst, so at ±25% it all expires together — measured, every protein failed inside a single minute, with the repair bill arriving exactly when production was lowest. At 0.4–1.7 the same burst fails over ~10 minutes, so attrition is a stream the cell can service.
+- **Ribosomes do not denature.** They are the only thing that can replace a ribosome, so mortality gave the network no floor and any run of bad luck was unrecoverable. Automation, once earned, stays earned — at the cost of the symmetry that everything the cell folds can be lost.
 
-### 9.5 The ribosome — BUILT
+### 9.5 The ribosome
 
-Not a build menu. A menu would retire §9.2's bead-walking and leave the player choosing from a list, which is a worse version of the thing it replaced: the tedium would be gone and so would the decision.
+Not a build menu. A menu would retire §9.2's bead-walking and leave the player choosing from a list — a worse version of the thing it replaced, with the tedium gone and the decision gone with it.
 
-**A ribosome senses its own neighbourhood and decides what to make.** It has a position and a radius (`RIBOSOME_REACH = 16`), it sees what is failing near it and fixes that, and it serves the player's standing orders. So the interesting question stops being *what do I build next* and becomes **where do I put the thing that keeps this part of the cell alive** — §6.7's placement decision and §4.7's spatial logistics, applied to maintenance.
+**A ribosome senses its own neighbourhood and decides what to make.** It has a position and a radius (`RIBOSOME_REACH = 16`), sees what is failing near it, fixes that, and serves the player's standing orders. So the question stops being *what do I build next* and becomes **where do I put the thing that keeps this part of the cell alive** — §6.7's placement decision applied to maintenance.
 
-Reach is sized against the actual geometry, which the first guess of 14 was not: the membrane sits at 18.4 from the centre, so at 14 ribosomes spread around the ring to cover it sat 13.9 apart against a reach of 14 — the network that keeps *itself* alive was one rounding error from breaking, and measured, it did. At 16, three ribosomes at ~9 tiles from the centre sit 15.6 apart and cover 382° of the ring between them. **One is still not enough**, deliberately: a central ribosome cannot reach the membrane at all, so siting has to be a decision and a second ribosome has to be a real one.
+Reach is sized against the geometry: the membrane sits at 18.4 from the centre, so a **central ribosome cannot reach it at all**. Three at ~9 tiles from the centre sit 15.6 apart — inside reach, so they maintain each other — and cover 382° of the ring between them. One is deliberately not enough; siting has to be a decision.
 
-Triage, in the order a cell would care about: **ribosomes → production (channel, enzyme) → everything else → renewals → player orders.** Without the production tier the cell spends its last ATP rebuilding a lactate carrier while the glucose channel that would have paid for it stays broken.
+Triage: **ribosomes → production (channel, enzyme) → everything else → renewals → player orders.** Without the production tier the cell spends its last ATP rebuilding a lactate carrier while the glucose channel that would have paid for it stays broken.
 
-#### 9.5a Pre-emptive repair — a protein is replaced when it starts to falter, not when it dies
+#### 9.5a Pre-emptive repair — replaced when it falters, not when it dies
 
-Playtested: *"the ribosome should pre-emptively repair proteins when they are close to denaturing, rather than waiting for the end."* Waiting for failure means every protein spends a window dead, so even a fully-covered cell runs with holes in it.
+Waiting for failure means every protein spends a window dead, so even a fully-covered cell runs with holes in it.
 
-**An earlier attempt at this was removed, and the objection to it was correct.** That version was a cheap partial top-up: a second cost, a second threshold and a second timescale — three more things to tune and three more for a player to model — and because it outranked actual repairs it could starve the path it was meant to assist.
+An earlier attempt at this was a cheap partial top-up, and the objection to it was correct: a second cost, a second threshold and a second timescale, all outranking actual repairs. This version adds none of those. **A renewal costs exactly what a replacement costs, because it is one** — same bill, same 4 ATP per bond. **The threshold is not a new number**: it is `REPAIR_AT`, already the point where `efficiency` says the protein has begun to falter. And **dead still beats tired** — renewals sit below every vacancy in the triage.
 
-This version adds none of those:
+> **A protein is replaced, at full price, when it starts to falter.** It just no longer has to die first.
 
-- **A renewal costs exactly what a replacement costs, because it *is* a replacement.** Same bill of materials, same 4 ATP per bond. Automation buys throughput, never material.
-- **The threshold is not a new number.** It is `REPAIR_AT`, which already existed as the point where `efficiency` says the protein has begun to falter. So "repair it the moment it starts to falter" is a definition rather than a tuned value, and covered machinery never runs at reduced rate.
-- **Dead still beats tired.** Renewals sit below every vacancy in the triage.
+Measured on a covered cell with supplies held non-limiting: zero proteins died, zero seconds without a flagellum, integrity floor 0.20 — a brief dip while the replacement folds.
 
-The rule is still one sentence: **a protein is replaced, at full price, when it starts to falter.** It just no longer has to die first.
+**The price is a third of the material budget.** A protein lives `1 − REPAIR_AT` of its span, so standing residue demand rises 1.33×. §10A.8 carries that as an explicit `PREEMPTION` term rather than a re-measured constant, because it is §9.5's policy cost and not §9.4's decay cost.
 
-Measured over a covered cell with residues and ATP supplied: **zero proteins died, zero seconds without a flagellum, integrity floor 0.20** — a brief dip below REPAIR_AT while the replacement folds, which is the honest cost of a fold that is not instant.
+#### 9.5b A hole nothing covers is not a queue
 
-**The price is a third of the material budget.** A protein now lives `1 − REPAIR_AT` of its span, so standing residue demand rises by `1/(1−0.25)` = 1.33×. §10A.8's deposits carry that as an explicit `PREEMPTION` term rather than a re-measured constant, because it is §9.5's policy cost and not §9.4's decay cost, and the two should be separable.
+The last flagellum denatured on a membrane tile outside every ribosome's reach. At 25 simulated minutes it had not been rebuilt and never would be — and the cycle closes on itself:
 
-#### 9.5b A hole nothing covers is not a queue — MEASURED
+> you cannot swim to a deposit without a flagellum, and you cannot fold a flagellum without residues from a deposit.
 
-Playtested: *"my cell seemed to get stuck at the end — I can't move it any more even though I had plenty of ATP, left click didn't work, buttons for seeking were all greyed out."*
+The principle this violates was already written down for §9.2's sequences — the flagellum deliberately needs no lysine, because gating the thing you need to *go get more* behind the thing you are out of is a deadlock rather than a dilemma. It turned out to be gated by **time** instead, and nobody had checked.
 
-Reproduced exactly. The last flagellum denatured on a membrane tile outside every ribosome's reach; at 25 simulated minutes it had not been rebuilt and never would be. And the cycle closes on itself:
+1. **A vacancy outside every ribosome's reach is never repaired**, and nothing distinguished it from one that is queued. `covered` rides on the wire per vacancy; the client draws an uncovered hole as a solid crossed ring rather than a dashed one.
+2. **A disabled control must say why.** The seek buttons greyed out on `flagella.length === 0` and stopped there, so an unresponsive UI was the only symptom of a state that had been developing for minutes.
+3. **The unrecoverable case is stated, not deduced.** `stranded` is deliberately *not* `flagella.length === 0` — losing a covered flagellum is a thirty-second inconvenience, and conflating them trains the player to ignore the warning. It fires only when there is no flagellum, none coming, no covered vacancy, **and** not enough residues or ATP to fold one by hand.
 
-> **you cannot swim to a deposit without a flagellum, and you cannot fold a flagellum without residues from a deposit.**
-
-The codebase had already stated the principle this violates — §9.2's note on the flagellum's sequence, that "making [the scarce residue] also gate the thing you need to go find more lysine would be a deadlock rather than a dilemma." The flagellum does not need lysine. It turned out to be gated by *time* instead, which nobody had checked.
-
-Three things were wrong, and only the first is about the sim:
-
-1. **A vacancy outside every ribosome's reach is never repaired**, and nothing distinguished it from one that is queued. `covered` now rides on the wire per vacancy, and the client draws an uncovered hole as a solid crossed ring rather than a dashed one — "nothing is coming" reads at a glance and without colour vision.
-2. **A disabled control must say why.** The seek buttons greyed out on `flagella.length === 0` and stopped there, so an unresponsive UI was the only symptom of a state that had been developing for minutes. They now carry the reason and the remedy.
-3. **The unrecoverable case is stated, not deduced.** `stranded` is a top-level flag and deliberately *not* `flagella.length === 0`: losing a covered flagellum is a thirty-second inconvenience, and conflating the two would train the player to ignore the warning. It fires only when there is no flagellum, no ribosome bringing one, no covered vacancy for one, **and** not enough residues or ATP to fold one by hand — checked against the actual bill of materials, because that is what the build will block on.
-
-The general lesson, which is not specific to flagella:
-
-> **A game may take away anything except the last means of recovery — and if it does, it must say so.** The failure here was not that the cell could die; it is that it died silently, in a way whose only symptom was a control that stopped responding.
+> **A game may take away anything except the last means of recovery — and if it does, it must say so.** The failure was not that the cell could die; it is that it died silently, with a control that stopped responding as the only symptom.
 
 ### 9.6 Full pipeline (later layers)
 DNA (master record) → **transcription** → mRNA (disposable working blueprint; number of mRNA copies of a gene = that protein's parallel production rate — the production dial) → ribosome reads codons → tRNAs translate. Expose the mRNA codon strip under the amino-acid beads as an optional depth layer.
@@ -840,63 +685,33 @@ A cell steers up a concentration gradient by sensing "is [nutrient] denser ahead
 ### 10A.4 Design tension to resolve deliberately
 Factory games are usually about a *fixed* base you elaborate; motility is about a *mobile* unit. These pull in opposite directions. Recommended arc: **the single cell is mobile (a forager) in the early game; multicellularity anchors the player into a fixed, elaborate organism later.** The game transitions from *nomad* to *settler*, and the loss of easy mobility becomes a felt consequence of getting big — which dovetails with the SA:V wall (§17) that forces the jump.
 
-### 10A.5 What building it changed — BUILT
+### 10A.5 How motility works
 
-Implemented in `packages/sim/src/motility.ts` and `world-patches.ts`, with 18 tests, and verified end to end against a live server: a flagellum assembled through the §9.2 pipeline (14 residues, 56 ATP), seated on the east face, moved the cell 35.9 tiles west in 8 s against a predicted 36.0, at a measured 3.6 ATP/s, and chemotaxis then climbed the gradient out of the depleting home pocket.
+**Thrust is paid out of the same ATP pool peptide bonds are**, at 3.6 ATP/s per firing flagellum. That figure is derived, not picked: one glycolysis enzyme nets ~7.14 ATP/s, so **running one flagellum costs almost exactly half an enzyme.** Coasting is genuinely free, which is what makes it a trade rather than a tax. (The prototype assigned `speed = 74` unconditionally every frame, so the tension §10A is built around did not exist at all.)
 
-**The competition is real now, and it was the whole point.** §16.2 records that `motility_chemotaxis.html` assigned `cell.speed = 74` unconditionally every frame, so swimming was a fixed background drain that could not be turned off or traded against anything — the tension §10A is built around did not exist. Thrust is now paid out of *the same ATP field peptide bonds are paid from*, at 3.6 ATP/s per firing flagellum. That figure is derived, not picked: one glycolysis enzyme nets ~7.14 ATP/s, so **running one flagellum costs almost exactly half an enzyme.** Coasting is genuinely free, which is what makes it a trade rather than a tax.
+**The cell moves without re-tiling.** It keeps a continuous position in a larger world and the grid is a window that travels with it: the cell's tiles never move relative to the lattice, and what changes is which part of the world the *extracellular* tiles look at. This sidesteps §3.6's moving-boundary problem entirely, which is the right trade — re-tiling is the genuinely hard seam and motility does not need it.
 
-**The cell moves without re-tiling.** It keeps a continuous position in a larger world and the grid is a window that travels with it: the cell's tiles never move relative to the lattice, and what changes is which part of the world the *extracellular* tiles are looking at. This sidesteps §3.6's moving-boundary problem entirely, which is the right trade — re-tiling is the genuinely hard seam and motility does not need it.
+**Velocity is set, not integrated.** At cell scale the Reynolds number is minute; a bacterium that stops swimming coasts a fraction of an atomic diameter. Modelling momentum would give a submarine, not a microbe.
 
-**Velocity is set, not integrated.** At cell scale the Reynolds number is minute; a bacterium that stops swimming coasts a fraction of an atomic diameter. Modelling momentum would give a submarine, not a microbe, so velocity is a direct function of current thrust and vanishes the instant thrust does.
+**Thrust runs along the inward normal**, so a flagellum pushes the cell *away from itself* and a cell with every flagellum on one face can only travel one way. Steering is choosing which fire — another instance of §6.7.
 
-**Thrust runs along the inward normal**, so a flagellum pushes the cell *away from itself* and a cell with every flagellum on one face can only travel one way. Steering is choosing which fire (§10A.1's "biases which propellers fire"), which makes flagellum placement another instance of §6.7.
+**Chemotaxis is greedy and local.** A real cell climbs the gradient it can *smell*, not the best food on the map: between a near pocket and a far richer one it climbs the near one. The tested claim is that *the concentration where the cell is goes up*. Repellents need no new primitive — hostile patches subtract from the same sense, exactly as a real chemoreceptor handles one.
 
-**Chemotaxis is greedy and local, and a test had to be corrected to say so.** The first version asserted the cell would approach the richest patch on the map; it failed, correctly. A real cell climbs the gradient it can *smell*, not the best food available — sitting between a near pocket and a far richer one it climbs the near one. The honest claim, and what is tested now, is that *the concentration where the cell is goes up*. Repellents need no new primitive: hostile patches subtract from the same sense, exactly as a real chemoreceptor handles one.
+**Patch depletion is what makes foraging exist.** A patch that never runs out makes motility pointless. Depletion is attributed by **contribution share** — each patch loses in proportion to how much of what reaches the cell came from it — which is robust to any geometry and more honest than a radius test: you draw down what you are actually drinking from.
 
-**Patch depletion is what makes foraging exist.** A patch that never runs out makes motility pointless — park on the richest pocket and never move. The constants are balanced so one glucose channel is roughly sustainable and scaling up visibly outruns the ground you are standing on. Too fast and §12's intro starves on its own opening pocket; too slow and §10A.2's "reason to leave" never materialises.
+> The opening pocket's concentration at the membrane is load-bearing: raising it from 0.47 to 0.91 nearly doubled import and **lysed the cell on an arc it had always survived.** Any change that makes the environment richer re-tunes everything downstream of it, so the acceptance test for reshaping a pocket is that this number does not move.
 
-**Two regressions worth recording, both from the environment becoming terrain:**
-- Copying the new patch-derived baseline into the whole field *overwrote the cytoplasm*, silently erasing the starting ATP and the entire residue stock seeded moments earlier. It presented as every build stalling on ATP from the first bond.
-- Placing the intro pockets at 24 tiles with sigma 14 instead of 40 with sigma 18 raised the concentration at the membrane from 0.47 to 0.91. Import nearly doubled, glucose accumulated faster than it could be spent, and **the cell lysed partway through an arc it had always survived.** Motility must not change what §12 feels like for a player who has not built a flagellum, and "the environment is now terrain" is exactly the kind of change that quietly re-tunes everything downstream. (The pockets have since been reshaped again — sigma 13, peak 2.0 — and the same number was the acceptance test: 0.468 against 0.467. See §10A.6.)
+### 10A.6 What actually motivates travel
 
-### 10A.6 Why the flagellum still feels pointless — MEASURED; ANSWERED IN §5a.11
+Depletion alone does not. Measured with depletion working correctly, a cell sitting on an emptying pocket does not care: upkeep is 1.8 ATP/s against three enzymes grossing ~21 ATP/s, so **supply must fall below ~8% before ATP moves at all**, and ATP sat at its ceiling at richness 0.00. Draining a patch makes it *look* empty without making leaving *necessary*.
 
-Playtest: *"the flagella doesn't do anything… maybe this is because the spawn point is near an endless supply of glucose… maybe make these regions smaller and depleted so we have to move around?"*
+Energy was never going to be the reason, because **glucose is everywhere**. Materials are: a residue you cannot substitute, whose deposit is somewhere specific, gates a specific protein — so a lysine shortage is a destination rather than a wait.
 
-The instinct is right and the proposed fix is not sufficient. Three separate things were wrong, and only two of them are fixable by tuning.
+> **A resource motivates travel when it cannot be substituted and is not uniformly available.** ATP fails both tests. Typed residues pass both.
 
-**1. Depletion was not happening at all — a real bug.** §10A.2 attributed a patch's draw-down to "the nearest patch of that species, if within `radius × 3`". That worked only while the pockets were large. Shrinking sigma from 18 to 13 put the cell at 3.08σ from the home patch — *just* outside the window — so it ate from the pocket and depleted nothing, forever. Measured: richness sat at **1.000 through twelve simulated minutes** of a full economy consuming hard.
+Energy scarcity is still coming, from §14's growth and division — a body big enough that §17's SA:V wall bites. That is a design dependency, not something to chase with constants.
 
-Attribution is now by **contribution share**: each patch loses in proportion to how much of what reaches the cell came from it. Robust to any geometry, and more honest — you draw down what you are actually drinking from, sitting between two pockets drains both, and drifting toward one shifts the load without a special case.
-
-**2. The pockets are smaller now, and the opening is bit-for-bit unchanged.** Sigma 18 → 13 with peak 1.0 → 2.0, chosen so the glucose concentration at the membrane on spawn is **0.468 against the previous 0.467**. That number is load-bearing: §10A.5 records that moving it to 0.91 lysed the cell on an arc it had always survived. A smaller, richer pocket also means moving *onto* its centre is worth ~4× the edge, so position within a patch becomes a decision.
-
-Measured run-down under a full economy, sitting still: richness **0.74 at 2 min, 0.48 at 4 min, 0.22 at 6 min, empty by 8 min.**
-
-**3. And it changes nothing, because the cell is over-provisioned tenfold.** This is the finding that matters, and it was only visible once depletion worked.
-
-```
-upkeep                    1.8 ATP/s      (§13.2, the intro death clock)
-three enzymes, gross    ~21.4 ATP/s      (3 × ENZYME_TURNOVER × ATP_PER_GLUCOSE)
-⇒ supply must fall below ~8% before ATP moves at all
-```
-
-Measured: **ATP sits at its 448 ceiling at richness 0.00.** The pocket empties, the glucose grains visibly run out, and the cell does not care. Draining a patch makes it *look* empty without making leaving *necessary*.
-
-So the reason a flagellum feels pointless is not the food supply, and no amount of patch tuning will fix it: **there is no ATP sink large enough to make foraging an investment.** A flagellum costs 56 ATP to build and 3.6/s to run against a 448 pool refilling at 21/s. Nothing currently buildable needs more than the starting pocket already provides, so exploration is a tax on a surplus rather than a way to buy something.
-
-The sink has to come from the §14 roadmap — growth, division, a body big enough that §17's SA:V wall bites. That is the real unlock, and it is worth stating plainly as a design dependency rather than being chased with constants:
-
-> **Exploration cannot be motivated by scarcity until something consumes at a scale the starting pocket cannot supply.** Depletion is necessary and nowhere near sufficient.
-
-**RESOLVED — and the conclusion above was right about the problem and wrong about the axis.** Everything here is measured against the ENERGY economy, and on that axis the analysis holds: ATP sits at its ceiling, so no amount of patch tuning makes leaving necessary, and the growth/division sink is still the thing that will make energy scarce.
-
-But energy was never going to be the reason to travel, because **glucose is everywhere**. §5a.11 supplies the reason that works at this scale: **materials**. A residue you cannot substitute, whose deposit is somewhere specific, gates a specific protein — so a lysine shortage is a destination rather than a wait. Glucose is a supply you tune; lysine is a place you go.
-
-The general form, worth carrying into §14's growth work: **a resource motivates travel when it cannot be substituted and is not uniformly available.** ATP fails both tests. Typed residues pass both.
-
-### 10A.7 The cell is pinned to the centre, so nothing looked like motion — BUILT
+### 10A.7 The cell is pinned to the centre, so nothing looked like motion
 
 Same playtest, second half: *"why aren't we actually swimming?"* — while the simulation was swimming **36.0 tiles in 8 s**, exactly `FLAGELLUM_SPEED × 8`.
 
@@ -910,56 +725,30 @@ A correct, measured, fully working 4.5 tiles/s therefore read as "the flagella d
 
 The general lesson, and it is a counterpart to §11.3b's: *any smooth interpolation in the render layer asserts that something moved.* The converse also holds — **if the camera is locked to the thing that moves, nothing on screen asserts motion at all, and the player will conclude the mechanic is broken.** A moving frame of reference needs its own texture.
 
-### 10A.8 The deposits were sized before anything consumed them — BUILT
+### 10A.8 Deposits are sized against what consumes them
 
-Playtest: *"the initial amino acid deposits are tiny… making it impossible to keep up with the denaturing."* Correct, and the arithmetic is worse than "tiny".
+The reserves were originally authored as "roughly twice the starting stock" — an inventory-shaped number in a world that had since acquired §9.4's metabolism for structure. Measured against §14's standing build-out (17 proteins, 181 residues) at a mean working life of 252 s, demand is **0.718 residues/s — 43 a minute, forever**, while the five deposits held 168 particles between them. **The whole map contained less amino acid than one build-out costs**, and regrowth ran two orders of magnitude below consumption, so the world was a fuel tank with about six minutes in it.
 
-§9.4's denaturation is what turns residues from a shopping list into a recurring cost, so the deposits have to be sized against **it**. They never were — the reserves were authored as "roughly twice the starting stock of that residue", which is an inventory-shaped number in a world that had since acquired a metabolism for structure. Measured against §14's standing build-out (17 proteins, 181 residues) at a mean working life of 252 s:
-
-```
-demand   gly 0.194/s  leu 0.139/s  lys 0.155/s  ala 0.131/s  val 0.099/s
-         TOTAL 0.718 residues/s — 43 a minute, forever
-
-supply   five deposits, 168 particles between them
-         + starting stock 264
-         − one build-out  181
-         ⇒ 5.8 MINUTES of maintenance in the entire world, and then nothing
-```
-
-**The whole map contained less amino acid than one build-out costs.** Regrowth was two orders of magnitude below consumption (0.0016/s of glycine against 0.194/s consumed), so a stripped deposit was permanently stripped and the world was a fuel tank, not terrain.
-
-#### 10A.8.1 Regrowth and reserve answer different questions
-
-They had been conflated, and only the second one existed. **Regrowth decides whether the world is sustainable at all; reserve decides only how long you can ignore a deposit.**
+**Regrowth and reserve answer different questions**, and they had been conflated with only the second existing:
 
 ```
-regrowth_i = 1.4 × demand_i      headroom for what a player cannot realise: travel time,
-                                 a hopper that stalls while they are elsewhere, and a
-                                 deposit at full richness regrowing nothing at all
-reserve_i  = regrowth_i × 600    ten minutes of its own regrowth = one foraging circuit
+regrowth_i = 1.4 × demand_i     decides whether the world is sustainable AT ALL.
+                                headroom for what a player cannot realise: travel time,
+                                a hopper that stalls while they are elsewhere, and a
+                                deposit at full richness regrowing nothing
+reserve_i  = regrowth_i × 600   decides only how long you can ignore a deposit.
+                                ten minutes of its own regrowth = one foraging circuit
 ```
 
-The second identity is the useful one: it ties deposit size to **circuit time**, so map pacing follows from how far apart the deposits are rather than from a tuned number. A deposit refills in exactly the time it takes to go round and come back, and arriving early means arriving at a pocket that is not ready.
+The second identity ties deposit size to **circuit time**, so map pacing follows from how far apart the deposits are rather than from a tuned number: a deposit refills in exactly the time it takes to go round and come back.
 
-The old global `PATCH_REGROWTH` was a flat increment of *richness*, which is reserve-relative — so it scaled with the size of the pocket rather than with the demand it had to meet, giving the 1300-particle glucose patch 0.052/s and a 40-particle glycine deposit 0.0016/s. **This is the same lesson `reserve` had already learned one field over** ("a single global rate cannot work across species whose quantities differ by two orders of magnitude") and the code had not followed through.
+The old global rate was a flat increment of *richness*, which is reserve-relative — so it scaled with the size of the pocket rather than with the demand it had to meet. **This is the same lesson `reserve` had already learned one field over** ("a single global rate cannot work across species whose quantities differ by two orders of magnitude") and the code had not followed through.
 
-#### 10A.8.2 An ore patch is not a gradient
+**An ore patch is not a gradient.** Scaling draw rate by `richness` makes extraction exponential, so a deposit asymptotes toward empty and **can never be stripped** — a two-minute stop collected 46% of it and the last quarter was unreachable at any duration. Residue draw now runs at full rate until a quarter remains, then tapers: the same curve `efficiency` uses for a worn protein, and a deposit becomes a quantity you can plan against.
 
-Draw rate scaled with `richness`, making extraction exponential: `dN/dt = −R·N/reserve`, so a deposit asymptotes toward empty and **can never be stripped**. A two-minute stop on a full deposit collected 46% of it and the last quarter was unreachable at any duration. That is the wrong shape for something §5b deliberately models as an ore patch rather than as a concentration — an inserter does not slow down because the chest is half empty.
+Measured over a 30-minute five-stop circuit: 89 proteins lost, 88 rebuilt, inventory 264 → 968, zero seconds blocked. Parked on one deposit instead, the cell runs dry and spends 1133 of 1800 s blocked — so §10A.2's *reason to leave* survives the fix. **This also closes §10A.6**: denaturation is the sink that section was looking for, arriving in materials rather than energy.
 
-Residue draw now runs at **full rate until a quarter remains, then tapers** — the same curve `efficiency` uses for a worn protein, and for the same reason: full rate for most of its life, then a visible falter. A deposit becomes a quantity you can plan against ("160 left, I am taking one a second"). Glucose keeps the old law, because its run-down was measured and tuned and this change is about residues.
-
-`RESIDUE_IMPORT_RATE` 0.3 → **1.0**, derived from the circuit rather than from feel: clearing the largest deposit's collectable 75% within a ~100 s stop needs ~1.2/s, and 1.0 sits just under that on purpose. One port on the tightest residue *very nearly* keeps up, and the answer when it does not is to build a second port — which is the decision the system exists to pose.
-
-#### 10A.8.3 Measured, and what it exposed underneath
-
-A 30-minute five-stop circuit, standing set plus three ribosomes: **89 proteins lost, 88 rebuilt, inventory 264 → 968, never below 324, zero seconds blocked on a missing residue.** Parked on one deposit instead, the cell runs dry in both leucine and lysine and spends 1133 of 1800 s blocked — so §10A.2's *reason to leave* survives the fix intact. Staying still still loses.
-
-**This also closes §10A.6.** That section concluded exploration could not be motivated until something consumed at a scale the starting pocket could not supply, and named growth and division as the dependency. Denaturation is that sink, arriving early and in **materials rather than energy** — exactly the axis §10A.6 identified as the workable one.
-
-**What it exposed:** the cell now dies of ATP instead. Three of the five residue deposits have **no glucose deposit in range at all**, against an interior glucose buffer of 22 seconds, so the foraging circuit starves the cell of fuel — ATP reaches zero at ~10 minutes with a full larder. Foraging and eating are mutually exclusive, which is a real tension the map geometry currently resolves as a wall rather than a decision. Unfixed, and recorded rather than tuned away.
-
-### 10A.9 Auto-seek: go to whatever is lowest — BUILT
+### 10A.9 Auto-seek: go to whatever is lowest
 
 Playtested ask: *"a feature where the seeker will seek whichever thing is in shortest supply, including glucose."*
 
@@ -1032,7 +821,7 @@ The rule that makes all three impossible rather than merely unlikely: **placemen
 
 Corollary worth stating plainly: **any smooth interpolation in the render layer asserts that something moved.** If nothing in the simulation moved, do not interpolate — snap.
 
-#### 11.3c Placement must be truthful in TIME too — BUILT
+#### 11.3c Placement must be truthful in TIME too
 
 The quota rule above fixed *where* dots go and left *when they exist* broken, in a way that took a playtest to name: "the flashing is too much."
 
@@ -1048,28 +837,25 @@ quota = floor(c / scale + dither(worldX, worldY))
 
 The rule, stated to match §11.3b's: **a dot's existence must depend only on its own tile.** Any placement rule with global coupling will shimmer, however correct its totals.
 
-#### 11.3d How much is one dot worth? — BUILT
+#### 11.3d How much is one dot worth?
 
-The second half of the same playtest note: "the amino acids and the lactate and glucose are overwhelming… make them represent more of an item each so there are fewer to understand."
+Playtested: *"the amino acids and the lactate and glucose are overwhelming… make them represent more of an item each so there are fewer to understand."*
 
-Measured on a representative mid-game cell (896 interior tiles), the tuned-for-density table produced **1,466 dots**. The damning part was the distribution: the five amino acids contributed 436 of them while being essentially **flat** — glycine's mean was 0.0389 against a maximum of 0.0392. Four hundred dots encoding no spatial information at all, competing for attention with ATP, which genuinely ranges 0.386→0.889 and is the number the player is actually playing.
-
-So a species' dot budget is now set by **how much it has to say**, and its scale is derived from that rather than chosen by eye:
+A species' dot budget is set by **how much it has to say**, and its scale derived from that rather than chosen by eye:
 
 ```
 scale = (mean concentration × interior tiles) / target dots
 ```
 
-| species | mean c | target dots | scale |
-|---|---|---|---|
-| atp | 0.386 | 90 | 3.8 |
-| lactate | 0.170 | 70 | 2.2 |
-| glucose | 0.073 | 60 | 1.1 |
-| the five residues | ~0.029 each | ~55 total | 2.4, shared |
+Measured, that took a mid-game cell from 1,466 dots to 285 — 5.1× fewer, each worth 5.1× more, with no loss of information because the biggest contributor was a residue cloud that was essentially flat (glycine 0.0389 mean against 0.0392 max) and encoded nothing.
 
-**285 dots in the same scene — 5.1× fewer, each worth 5.1× more.** All five residues share one scale deliberately: per-residue scales would make counts incomparable, and §9.2 blocks a build on a *specific* bead, so "which am I short of?" has to be answerable by looking. One shared scale turns the residue cloud into a bar chart. The legend prints the worth of one dot (`1 = 1.1`), because "fewer dots" otherwise reads as "less of it".
+The legend prints the worth of one dot, because "fewer dots" otherwise reads as "less of it".
 
-#### 11.3e Shape is the third channel — BUILT
+> **Give a quantity dots in proportion to how much spatial structure it actually has, not to how much of it there is.**
+
+That argument was eventually followed all the way: residues stopped being drawn as dots at all (§5a.9), since a uniform wash is the honest depiction of a well-mixed pool and dots imply somewhere to walk to.
+
+#### 11.3e Shape is the third channel
 
 §11.1 gives density to concentration and colour to identity. With eight managed species — five of them amino acids — colour alone was seven hues shimmering in overlap, and the first playtest note about it was "unclear what each of the particles in the cell is". Shape is the channel that survives being small, dim, overlapped, or colour-blind.
 
@@ -1100,7 +886,7 @@ tremor = tension * 0.014 * sin(9θ + 7t)                                       /
 R(θ)   = Rc * (1 + lazy * (1 - 0.5*tension) + tremor)
 ```
 
-### 11.6 Soft-body (the physical route) — BUILT
+### 11.6 Soft-body (the physical route)
 
 Implemented in `apps/client/src/softbody.ts`, and it replaced §11.5's `memR` harmonic sum rather than sitting alongside it. The same three harmonics now drive an ambient **force** along the ring's normals instead of setting a radius directly, so the motion is damped and laggy — §11.5's "slow to start and stop, never snappy" — instead of kinematically exact.
 
@@ -1118,7 +904,7 @@ The properties that matter are tested rather than asserted (`apps/client/test/so
 
 The right underlying object is a **pressurized soft-body loop**: a ring of points joined by springs with an outward pressure force holding a target area. Pressure target = volume; spring stiffness = membrane tension (the reinforcement upgrade stiffens springs); underdamped area-constrained motion *is* the "oscillate while maintaining volume" wobble. Two cells pressed together each hold their area and deform against each other → the shared interface flattens → a crowd packs into rounded polygons → **confluent tissue is a foam, for free.** (This lush soft-body is a close-up luxury; zoomed out, cells simplify to a breathing/static foam.)
 
-### 11.6a The membrane ebbs, and drags when it swims — BUILT
+### 11.6a The membrane ebbs, and drags when it swims
 
 Playtest: *"while the membrane does spring in at startup, it doesn't move after that… I would expect a gentle ebbing and flowing when it isn't fully stretched, and that moving along would create drag and ripples."*
 
@@ -1135,7 +921,7 @@ The drag force is deliberately **uniform across every node**. That deforms witho
 
 "Ebbing" is **amplitude**: peak-to-peak radial swing per node. Measure the thing the complaint was actually about.
 
-### 11.7 Motion is not decoration — REMOVED, and why
+### 11.7 Motion is not decoration
 
 *This section required a **reduced-motion** setting that damped the ooze to 18% amplitude, defaulting to the OS `prefers-reduced-motion`. It was built, then removed on playtest evidence.*
 
@@ -1143,7 +929,7 @@ Playtested: *"the motion reduction turned off is way better — nice and organic
 
 The setting is gone, along with the toggle and the OS default. The membrane now always breathes at full amplitude, and the only thing that stills it is death (§11.5) or low health.
 
-**The reasoning that stands, and the reasoning that did not.** §11.5's rule survives untouched — *motion means alive, stillness means death* — and it is precisely why a damped setting was a poor fit here: it made a healthy cell read as a dying one, using the same channel the game reserves for mortality. A visual language cannot carry a comfort setting on the same axis as its most important signal without the two colliding. That is a design reason rather than a rendering one, and it only became visible with a cell healthy enough to sit and watch (§16.7).
+**The reasoning that stands, and the reasoning that did not.** §11.5's rule survives untouched — *motion means alive, stillness means death* — and it is precisely why a damped setting was a poor fit here: it made a healthy cell read as a dying one, using the same channel the game reserves for mortality. A visual language cannot carry a comfort setting on the same axis as its most important signal without the two colliding. That is a design reason rather than a rendering one, and it only became visible with a cell healthy enough to sit and watch (§16.6).
 
 **What is given up, recorded rather than glossed.** Vestibular accessibility. The original requirement was a real one — constant ambient motion genuinely does fatigue some players — and nothing replaces it. The button pulse still honours `prefers-reduced-motion` in CSS, but the cell itself no longer does. If this is revisited, the axis to damp is probably the *camera and parallax* (§10A.7's motes and patch drift, which carry no meaning) rather than the membrane (which carries the most).
 
@@ -1204,7 +990,7 @@ ENZYME_BIND_TIME    = 1.12               // s per crack of ONE PARTICLE, one act
 LACTATE_PER_GLUCOSE = 2                  // CORRECTED from 1 — see below
 K_ON                = 80                 // encounter rate; per PARTICLE concentration (§5d)
 ```
-*Both of these were 0.28 and 20 in the molecule unit §5d retired. The ATP/s is unchanged — only the unit the rate is counted in moved. §5d.2 records the 4× bug that leaving one of them behind produced.*
+*Both of these were 0.28 and 20 in the molecule unit §5d retired. The ATP/s is unchanged — only the unit the rate is counted in moved. §5d.1 records the 4× bug that leaving one of them behind produced.*
 **Stoichiometry correction.** §8.1 states `1 glucose → 2 ATP + 1 lactate`. Real anaerobic glycolysis is `1 glucose → 2 ATP + 2 lactate` (C₆ splits into two C₃ units). §1.3 makes native stoichiometry a signature feature, so the real ratio wins. Consequence to re-check when the intro is re-hosted: this **doubles the osmotic load per glucose**, so §12.3's swelling crisis arrives roughly twice as fast. That is probably an improvement in drama, but it is a pacing change, not a free correction.
 
 ### 13.4 Transport — permeabilities, not funnel strengths
@@ -1368,7 +1154,7 @@ Headless vitest over `packages/sim`. The payoff of §3.7's process boundary is t
 
 - **Discrete matter** (§5a) — the random walk reproduces the same `D` the field uses (4,000 walkers against `⟨r²⟩ = 4Dt`); grains reflect off the boundary rather than piling on it; minting carries its remainder and taking splits the last grain, so quantising conserves; discrete species have NO interior field, so there is exactly one representation; grains are osmotically active; and §12's whole arc still runs on them.
 - **Catchability** (§5a.8) — a residue bead drifts far slower than the nanobot walks, and the bot can actually walk to one and collect it. Glucose and lactate are asserted NOT slowed, because their `D` is §17's penetration depth and slowing it would blunt the SA:V wall.
-- **The residue economy BALANCES** (§9.4, §10A.8) — every deposit regrows faster than the cell consumes that residue; a deposit refills in 300–900 s, so it is neither a tap nor a one-shot; one port can clear a deposit inside a single visit, so the regrowth is actually reachable; the map holds more than 4× a build-out; and staying put still loses, because one deposit serves one of the five types the cell is spending. See §16.6 for why this class of test did not exist before.
+- **The residue economy BALANCES** (§9.4, §10A.8) — every deposit regrows faster than the cell consumes that residue; a deposit refills in 300–900 s, so it is neither a tap nor a one-shot; one port can clear a deposit inside a single visit, so the regrowth is actually reachable; the map holds more than 4× a build-out; and staying put still loses, because one deposit serves one of the five types the cell is spending. See §16.5 for why this class of test did not exist before.
 - **Repair and stranding** (§9.5a, §9.5b) — a covered cell loses no protein at all and spends no time without a flagellum; a renewal restores the protein in place rather than installing a second copy; a dead protein outranks a tired one; a central ribosome is asserted NOT to cover the membrane, since that is the siting decision the whole mechanic is about; and `stranded` fires only when no flagellum exists, none is coming, and none can be folded — never while one is merely worn.
 
 **The suite runs in two passes.** `npm test` runs the sim/protocol/client suites in parallel, then the socket suite alone. The wire tests drive a real server ticking at 120 Hz in *wall-clock* time and assert things like "the nanobot reaches the nucleus within 20 s", so keeping compute-bound workers off its back is worth doing regardless.
@@ -1377,42 +1163,22 @@ Headless vitest over `packages/sim`. The payoff of §3.7's process boundary is t
 
 > **"It only fails under load" is a symptom, not a cause.** Accepting it as one buys a plausible story in place of a fix — and this codebase has now paid for that mistake twice, here and at §17.2, where a number that depended on the monitor's refresh rate was taken as physics.
 
-#### 16.1a A green suite that was not running — two defects in the verification itself
+#### 16.1a Two defects in the verification itself
 
-§17.2 records a measurement that was wrong because it depended on the monitor's refresh rate. This is the same species of error one level up: a *test suite* that reported success while an entire file had stopped running. Recorded here because §16 is worth nothing if the way results are read is itself unsound.
+A test suite reported success while an entire file had stopped running. §16 is worth nothing if the way results are read is itself unsound.
 
-**Defect one — a crashed worker is not a skipped test.** `metabolism.test.ts` exhausted its worker's heap (`FATAL ERROR: Reached heap limit`). Vitest correctly reported `Worker exited unexpectedly`, dropped all 12 of that file's tests, and printed:
+- **A crashed worker is not a skipped test.** A file exhausted its worker's heap; vitest dropped all 12 of its tests and printed `Test Files 8 passed (9)` / `Tests 122 passed (134)`. That is a failure, and it reads as success because the eye goes to `122 passed` and not to `(9)`. **Read the file count.**
+- **The exit code was never being read.** Runs were invoked as `npm test | grep … | head`, and a pipeline exits with the status of its *last* command — so vitest's non-zero status was replaced by `head`'s zero on every run, including one taken alongside six genuinely failing tests. **Never pipe a test run you intend to trust.**
 
-```
-Test Files  8 passed (9)
-     Tests  122 passed (134)
-```
+Both share a shape with §17.2 and §11.3b: **the apparatus was reporting something other than what it appeared to report.**
 
-Which is a failure. It reads as a success because the eye goes to `122 passed` and not to `(9)`. **Read the file count.**
-
-The cause was self-inflicted and specific to §5a: the helper `feed()` was written when glucose was a field, where "add 5 every step" costs nothing because it is the same array. Once glucose became grains the identical line *allocated an object* every step — ~25,000 of them inside a 20,000-step loop, each subsequently rescanned by `totalNear` on every later step. Generalising:
-
-> **A test helper written against a continuum does not automatically survive that quantity becoming discrete.** The line that was free becomes the line that allocates.
-
-Fixing it exposed a second consequence of quantisation worth keeping: `GRAIN_UNIT.glucose` was 4, so asking `feed()` for "1 molecule" minted *nothing at all* — `mint` only creates whole parcels — and the enzyme starved beside an empty store. Test helpers now count in the unit the simulation actually deals in, so that cannot be written by accident. (§5d has since made that unit the particle, universally, which removes the trap rather than documenting it.)
-
-**Defect two — the exit code was never being read.** Runs were invoked as `npm test | grep … | head`. A shell pipeline exits with the status of its **last** command, so vitest's non-zero status was replaced by `head`'s zero on every single run. Several "exit code 0" observations recorded during development were therefore vacuous — including one taken alongside six genuinely failing tests.
-
-> **Never pipe a test run you intend to trust.** Use `set -o pipefail`, or read the raw status. A filter over the output is not a verification.
-
-Both defects share a shape with §17.2 and with §11.3b's artifacts: **the apparatus was reporting something other than what it appeared to report.** The fix in every case is the same — check what the number actually measures before believing it.
+A related trap, from the same period: a wire test for transporter placement chose the *farthest* membrane tile — which is buried wall (§4.2a) — and asserted seating a carrier there succeeded. It did succeed, and the carrier then transported nothing. **The test encoded the bug and passed.** Coverage of a path is not coverage of its correctness.
 
 #### 16.1b The §17 sweep is STALE — the wall is argued, not measured
 
-`scripts/sweep.ts` still assumes the concentration model: it measures penetration depth from a diffusion field and a per-tile consumption rate, neither of which the simulation runs any more. Its numbers in §17.3 and §17.4 therefore describe a version of the game that no longer exists.
+`scripts/sweep.ts` still assumes the concentration model: it measures penetration depth from a diffusion field and a per-tile consumption rate, neither of which the simulation runs any more. **§17's figures should be read as historical until it is rewritten against particles.**
 
-The argument that the wall survives is: glucose particles random-walk at their tabulated `D`, so the distance one covers before an enzyme eats it is the same quantity `L` was — penetration depth, now discrete. Supply is `GLUCOSE_IMPORT_RATE × ports`, demand is `ENZYME_TURNOVER × enzymes`, and a large cell still cannot get fuel to its middle.
-
-**That is reasoning, and §17.2 is this document's own warning about trusting a number whose apparatus has changed underneath it.** Until the sweep is rewritten against particles, §17's figures should be read as historical.
-
-A note on what this section is worth. The pre-existing wire test for transporter placement deliberately chose the *farthest* membrane tile — which is buried wall — and asserted that seating a carrier there succeeded. It did succeed, and the carrier then transported nothing. **The test encoded the bug and passed.** Coverage of a path is not coverage of its correctness; a test that asserts only "the call returned ok" will keep passing through exactly the failures that matter most.
-
-Then `scripts/sweep.ts` re-runs the §17.3 sweep on the fixed-timestep grid, and its output replaces the provisional numbers flagged in §17.2.
+The argument that the wall survives is that glucose particles random-walk at their tabulated `D`, so the distance one covers before an enzyme eats it is the same quantity `L` was. That is reasoning — and §17.2 is this document's own warning about trusting a number whose apparatus has changed underneath it.
 
 ### 16.2 What the prototypes actually validate
 The prototypes are persuasive and the design conclusions drawn from them hold. But most are **costume without a truth layer underneath**, and the table below is the honest accounting — it exists so that a claim in this document is never mistaken for a demonstrated result.
@@ -1433,123 +1199,47 @@ The central inversion: §2.1 requires that particles be spawned *from* a field a
 
 **Three incompatible ATP economies** run across these files — flat 1.8/s (`full_cell`), flat 1.5/s (`cytoskeleton_belts`), and per-tile 0.06 with a belt-cost term (`belts_vs_sav`). This is the concrete reason §13 is re-derived from scratch rather than adopted from any one prototype.
 
-### 16.3 What building it changed
+### 16.3 Corrections this document absorbed
 
-Findings from the first real implementation. Each was measured, not reasoned about, and each changed a number or a model that this document previously stated with confidence. They are recorded here because the failure modes are subtle and would otherwise be rediscovered the hard way.
+Findings from implementation that changed a number or a model this document had stated with confidence. Each is now written into the section that owns it; they are listed here so the *class* of error stays visible.
 
-1. **§13.6's enzyme density was unachievable, and the correction produced a new load-bearing constraint.** Solving `L = R0` for the transit limit alone gave ~18 enzymes per 1000 tiles; the sweep read 100% starving at *every* radius, because flux binds far earlier. Re-deriving against both ceilings yields ~2.2 enzymes per 1000 tiles, and — more importantly — the condition `k < 2·P²/(D·c₀)` without which §17.5's belt tier does not exist at all. Details in §13.6.
+- **ATP must not be osmotically active** (§7.4). A running enzyme drove the pool from 106 to 302 in two minutes and *that*, not the lactate, inflated the cell — turning §12.3's waste crisis into an energy crisis. Real adenine nucleotides are conserved, so the count is a constant and belongs in `B_OSM`.
+- **Respiratory control cannot be modelled yet.** Stalling a full enzyme is correct biology, but it stops glucose being consumed, so internal glucose climbs toward the external concentration — and glucose is osmotically active. That inverts §7.2's negative feedback into a positive one and the cell lyses. §8.1's "glycolysis traps glucose the instant it enters" turns out to be load-bearing rather than flavour.
+- **The ATP ceiling must be compartment-level, not per-tile.** A per-tile clamp saw an enzyme's whole deposit as a spike and destroyed ~87% of it, silently cutting yield to about 0.25 ATP per glucose while every number looked plausible.
+- **In 2D the extracellular medium must be a boundary condition, not state.** Exported lactate builds a boundary layer that flattens its own gradient — measured 0.044 inside against 0.041 outside, so the driving gradient was 0.003 against a bulk-to-bulk 0.145. This cannot be fixed by widening the medium: steady-state 2D diffusion from a point source falls off as `ln(r)` and never converges, where 3D gives `Q/(4πDR)`. **A 2D cell in still water genuinely cannot shed waste.** Setting clearance to zero recovers the stall deliberately, and *is* the argument for circulation (§6.8, §17.7) made mechanical.
+- **A waste-export face should be wider than an import face.** An import face points at something; waste points at nothing. A narrow export face drew so hard its inner neighbours sat at 2–8% of bulk, starving the carrier of its own substrate.
+- **Permeability is per TRANSPORTER, not per membrane tile** (§13.4). Derived as "one 13-tile face feeds one enzyme", it meant a hand-built channel delivered a thirteenth of an enzyme's appetite and the intro deadlocked. `P` is now "one channel feeds one enzyme", which is also the biologically honest reading.
+- **Membrane upkeep is billed to the cytoplasm** (§13.2), because §4.2 gives a membrane tile no pool to pay from — which is also where a real cell's membrane energy comes from.
+- **The client drew the membrane in the wrong place**, reconstructing the ring from the *osmotic* radius √(volume/π) while the tiles sit at the fixed geometric radius. Clicks meant to seat a transporter landed on cytoplasm. The server now sends the tile list rather than letting it be inferred — precisely the failure §2.1 exists to prevent.
+- **§12.3's build order is wrong for the physics.** It lists the amino-acid transporter before the lactate carrier, which reads sensibly and plays badly: lactate accumulates the entire time you build anything else, and the cell lysed mid-build. The carrier is urgent; the supply line is merely important.
 
-2. **ATP must not be osmotically active.** §7.4's model counts the ATP pool as solute. On a real field with nothing yet to spend energy on, a running enzyme drove the pool from 106 to 302 in two minutes and *that*, not the lactate, became what inflated the cell — turning §12.3's waste crisis into an energy crisis. Real adenine nucleotides are conserved (ATP ⇌ ADP + Pi), so the count is a constant and belongs in `B_OSM`. Excluded, and capped by `ATP_POOL_PER_TILE`.
+### 16.4 The intro, as it actually plays
 
-3. **Respiratory control cannot be modelled yet, and the reason is a genuine trap.** Stalling the enzyme when the pool is full is correct biology, but it stops glucose being consumed, so free internal glucose climbs toward the external concentration — and glucose *is* osmotically active. Its equilibrium amount scales with volume, which inverts §7.2's negative feedback into a positive one: more volume admits more glucose, which demands more volume. No fixed point; the cell lyses. §8.1's "glycolysis traps glucose the instant it enters, holding internal free-glucose near zero" turns out to be load-bearing rather than flavour. Surplus ATP is dissipated as heat instead. Revisit once the ribosome gives ATP somewhere to go.
+Verified end to end over a live socket (`npm run play-intro`), every protein hand-assembled by the nanobot with no free builds: the death clock, the discovery that raw glucose is not energy, the turn as the enzyme lands, the waste crisis arriving unprompted, and a recovery that costs something. No lysis.
 
-4. **The ATP ceiling has to be compartment-level, not per-tile.** An enzyme deposits its whole 2 ATP into one tile; a per-tile clamp sees that transient spike and destroys ~87% of it before diffusion spreads it, silently cutting glycolysis' effective yield from 2 ATP to about 0.25. The cell starved with a working enzyme and the numbers all looked plausible.
+### 16.5 Every test asserted that a mechanism WORKS; none asserted the numbers BALANCE
 
-5. **In 2D, the extracellular medium must be a boundary condition, not state.** Exported lactate builds a boundary layer just outside its carrier face and flattens its own gradient: measured 0.044 inside against 0.041 outside, so the gradient actually driving transport was 0.003 while the bulk-to-bulk gradient was 0.145. Export ran at 2.8/s against 7.1/s of production. This cannot be fixed by widening the medium, because steady-state 2D diffusion from a point source falls off as `ln(r)` and never really converges — in 3D the same integral gives `Q/(4πDR)` and the problem largely evaporates. **A 2D cell in still water genuinely cannot shed waste.** So the medium is modelled as effectively infinite and well stirred. Setting that clearance to zero recovers the stall deliberately, and *is* the argument for circulation (§6.8, §17.7) made mechanical.
+The defect behind §10A.8 was pure arithmetic and the suite could not see it. Tests covered that a port imports, a deposit depletes, a ribosome rebuilds, residues are whole counts — every mechanism on the path passed while **the world held less amino acid than a single build-out costs**.
 
-6. **A waste-export face should be wider than an import face.** An import face has to point at something — §12.1's glucose pocket is on one side. Waste points at nothing. A 13-tile export face drew so hard that its inner neighbours sat at 2–8% of bulk concentration, starving the carrier of its own substrate. Doubled, and `D_lactate` raised from 12 to 16 (lactate is ~90 Da against glucose's ~180, so it genuinely diffuses faster — the prototypes' 12 was a guess).
+That is a gap in kind, not in coverage. A mechanism test asks *does this do the thing*; it cannot ask *is there enough*, because "enough" is a relationship between two subsystems written months apart, and the two numbers never met in any single file.
 
-7. **Membrane upkeep is billed to the cytoplasm.** §13.2 anchors `UPKEEP_PER_TILE` against interior *plus* membrane, but §4.2 says a membrane tile holds no pool and so cannot pay. Its share is charged to the cytoplasm that maintains it — which is also where a real cell's membrane energy comes from.
-
-8. **§7.3's prose and §7.4's model disagree about stiffness.** Recorded in full at §7.3; `STIFF` divides the rate of approach and does not lower the equilibrium volume, so reinforcement buys time rather than headroom.
-
-### 16.4 What building §9.2 changed
-
-The construction pipeline — the nanobot, typed residues, per-bond ATP — turned out to invalidate several numbers that had been fine while builds were free. Every one of these is the same shape: **a constant derived for a face full of transporters, applied to a player who builds one protein at a time.**
-
-1. **Permeability is per TRANSPORTER, not per membrane tile.** §13.4 originally derived `P = 0.2747` as "one 13-tile face feeds one enzyme". But a hand-built protein seats exactly ONE transporter on ONE tile, so a channel delivered a thirteenth of an enzyme's appetite, the cell could not cover its own upkeep, and the intro deadlocked at ~0 ATP with a working channel *and* a working enzyme. Thirteen hand-built channels would have cost 312 ATP against a 140 reserve. `P` is now 3.571 per transporter — "one channel feeds one enzyme" — which is also the biologically honest reading, since a GLUT1 channel turns over ~1200 glucose/s against hexokinase's ~100–1000/s. §17's flux ceiling is unaffected: it uses `IMPORT_PER_MEM = P × sustained density (1/13) = 0.2747`, the figure §17.3 and §17.4 were measured with.
-
-2. **The starting reserve has to fund the bootstrap.** `ATP_START = 55` was right when builds were free and it only had to buy ~30 s of thinking time. With §9.1's cost real, nothing produces ATP until the glycolysis enzyme exists, and the enzyme is useless until the glucose channel exists — so the opening reserve must cover *both proteins plus the walking and assembling between them*: 24 + 32 + ~48 = ~104 ATP. Raised to 140.
-
-3. **Import and export are asymmetric, and it is not a tuning accident.** One channel feeds one enzyme, but it takes **two carriers to clean up after it**, placed **flanking the enzyme** rather than on a distant face. Measured over a minute from 132 lactate:
-
-   | carriers | placement | lactate after |
-   |---|---|---|
-   | 1 | opposite face | 191 (rising) |
-   | 1 | beside the enzyme | 181 (rising) |
-   | 2 | opposite face | 173 (rising) |
-   | 2 | flanking the enzyme | **112 (falling)** |
-   | 3 | flanking the enzyme | **47 (draining)** |
-
-   The cause is structural: a channel is fed by a well-stirred external medium that never depletes, while a carrier is fed by *interior diffusion* delivering waste to a single tile, which can only accept about `D · Δc · 3 edges` per second — right at one enzyme's output and therefore always losing. **Placement beats count**: two carriers in the right place beat two in the wrong place by more than adding a third does. §12.3's instruction to put the carrier "on a third face" reads naturally but is wrong on this grid, and this is §6.7 earning its section. It also rhymes with §17, where interior transport is again what fails first.
-
-4. **The nanobot gathers from a NEIGHBOURHOOD, not from one tile.** A starting stock of ~45 glycine across 896 cytoplasm tiles is 0.05 per tile, so requiring a whole unit from the tile underfoot asked for twenty times the cell's entire supply in one place — the bot starved standing in a full pantry. It now draws from a radius-4 patch for residues and radius-6 for ATP (ATP is smaller and faster, so its catchment is genuinely wider). The side effect is the good kind: gathering leaves a visible hole in the residue field, so working the same spot repeatedly depletes it and you have to move.
-
-   **And a bead had to get smaller.** Even with neighbourhood gathering, `RESIDUE_UNIT = 1` made one bead ~80% of what the patch held, so every pickup emptied the local supply and the next waited on diffusion at D=8 to refill it — the bot spent most of the intro blocked. The obvious fix, a bigger stock, is closed off: **residues are osmotically active**, and at four times the pool the cell starts at stretch 0.27 against a rupture threshold of 0.30 — swollen before the player has done anything. So the bead shrank instead, to 0.25. The patch now holds ~5 beads, assembly runs smoothly, and the blocking case still fires when a type genuinely runs out.
-
-   That constraint is worth remembering generally: **the residue stock is capped by osmosis, not by generosity.** Anything that wants more building material has to earn it by exporting something else first.
-
-5. **Assembly needed a clock.** Without a per-bond duration it ran at one residue per sim step — 120 a second, an entire protein in 0.07 s. §9.2 wants the first protein to be *deliberate*, so `BOND_TIME = 0.45 s` makes the eight-residue enzyme take 3.6 s to assemble and 1.3 s to fold.
-
-6. **The client was drawing the membrane in the wrong place**, and it is worth recording because it is precisely the failure §2.1 exists to prevent. `ScalarsMsg.radius` is the *osmotic* radius √(volume/π), which drifts as the cell swells; the membrane TILES sit at the fixed geometric radius, because volume is deliberately decoupled from tile count until re-tiling exists (§3.6). A client reconstructing the ring from `radius` drew it somewhere the membrane was not, and clicks meant to seat a transporter landed on cytoplasm. The server now sends the actual membrane tile list, which also lets the client highlight legal deployment sites — making §6.7's decision visible rather than guessed at.
-
-7. **A starting residue stock is a hard prerequisite the spec never states.** Every protein costs amino acids, and the amino-acid transporter is itself a protein, so an empty cytoplasm makes the intro unstartable. `enzyme_build.html` solved it the same way. The stock is sized to complete the intro with margin (§12 is un-loseable) while staying finite enough that the transporter is a real supply line — and lysine is deliberately scarcest, so a player who builds lysine-heavy proteins first meets §9.2's blocking case as a consequence of their own ordering.
-
-8. **§12.3's build order is wrong for the physics — waste before supply line.** The section lists the amino-acid transporter before the lactate carrier, which reads sensibly and plays badly: from the moment the enzyme runs, lactate accumulates at ~7 units a second and tension climbs the entire time you are building anything else. Building the transporter first cost ~90 s of swelling and the cell **lysed mid-build** — correct behaviour, since the swelling had been visible for a minute and §10.4's bleb was right there, but the wrong lesson for Act 2. The carrier is urgent; the supply line is merely important.
-
-   Related: the intro needs **three** carriers, not two. Two hold the line; the third is what brings volume back down, and it is needed precisely because the amino-acid transporter built next adds osmotic load of its own as it imports. "Just keeping up" is not recovery.
-
-### 16.5 The intro, as it actually plays
-
-Verified end to end over a live socket (`npm run play-intro`), with every protein hand-assembled by the nanobot — no free builds anywhere:
-
-```
-start                    ATP 209   vol  911   tension 0.03
-glucose channel  (24 ATP, 6 res)   ATP 160   vol  919   tension 0.04   ← still falling
-glycolysis enzyme(32 ATP, 8 res)   ATP 154   vol 1063   tension 0.30   ← the curve turns
-  +35s                             ATP 195   vol 1178   tension 0.49   ← waste biting
-3× lactate carrier (28 ATP, 7 res) ATP 242   vol 1136   tension 0.42   ← coming down
-amino transporter(36 ATP, 9 res)   ATP 263   vol 1148   tension 0.44   ← supply line open
-```
-
-Six proteins, 176 ATP of peptide bonds, no lysis. The shape §12 asks for is all there: the death clock, the discovery that raw glucose is not energy, the turn, the waste crisis arriving unprompted, and a recovery that costs something.
-
-### 16.6 Every test asserted that a mechanism WORKS; none asserted that the numbers BALANCE
-
-The defect behind §10A.8 was pure arithmetic, and the suite could not see it. There were tests that a port imports, that a deposit depletes, that a ribosome rebuilds what denatured, and that residues are whole counts — every mechanism on the path was covered, and each one passed while **the world held less amino acid than a single build-out costs**.
-
-That is a gap in kind, not in coverage. A mechanism test asks *does this do the thing*; it cannot ask *is there enough*, because "enough" is a relationship between two subsystems that were written months apart. Denaturation gave residues a rate of consumption and nothing re-derived the deposits against it — the two numbers never met in any single file, so there was nowhere for the contradiction to show up.
-
-**Where this is likely to recur:** anywhere a *stock* authored by one system is drawn down by a *rate* authored by another. The pairs currently live in the codebase are residues (deposits ↔ denaturation), glucose (pockets ↔ enzyme turnover), ATP (pool ↔ upkeep + swimming + peptide bonds), and membrane tiles (the ring ↔ how many proteins want to sit in it). Only the first now has a balance test.
-
-The general form, and it is the counterpart to §13's discipline of making a constant carry its derivation:
+**Where this recurs:** anywhere a *stock* authored by one system is drawn down by a *rate* authored by another. Live pairs: residues (deposits ↔ denaturation), glucose (pockets ↔ enzyme turnover), ATP (pool ↔ upkeep + swimming + bonds), membrane tiles (the ring ↔ what wants to sit in it). **Only the first has a balance test.**
 
 > **A constant that carries its derivation still needs a test that the derivation is still true.** Comments record what was balanced against what at the time of writing; only an assertion notices when the other side moves.
 
-§5d.2 is the same lesson from the other direction — two 4× errors survived a unit collapse because nothing compared a measured rate against its own derived constant. Both were caught the moment something did.
+### 16.6 Current state — tick 100,000
 
-### 16.7 The first cell that did not die — tick 100,000
-
-Playtested, hand-driven, no headless assistance: **tick 100,000 = 833 s = 13 min 53 s at 120 Hz**, alive. This is the acceptance evidence for §9.4, §9.5, §10A.8 and §10A.9 *together*, and the reason it needs recording as one result is that each of them was previously observed to fix a symptom the next one re-broke.
-
-Reported state at the milestone, and what each number means:
+First sustained-survival run: **tick 100,000 = 13 min 53 s**, alive, hand-driven. Acceptance evidence for §9.4, §9.5, §10A.8 and §10A.9 *together*, which matters because each was previously observed to fix a symptom the next one re-broke.
 
 ```
-ATP        500 / 502      pinned at the ceiling — energy is in surplus, not scarce
-volume    1137            radius 19.02 against a rest 17.84
-                          ⇒ stretch 0.066  ⇒ tension 0.221
-residues   gly  72 →  68     −4
-           leu  60 → 123    +63
-           lys  42 →  61    +19
-           ala  48 →  63    +15
-           val  42 →  52    +10
-                          ⇒ 264 → 367, net +103
+ATP        500 / 502   pinned at the ceiling — energy in surplus
+volume    1137         ⇒ stretch 0.066 ⇒ tension 0.221, well under STRESS_ONSET 0.6
+residues   264 → 367   net +103 AFTER paying for every build and replacement
 ```
 
-**Materials are in surplus, and by more than the total shows.** The +103 is what survived *after* paying for everything built and every protein replaced across fourteen minutes, so gross harvest comfortably exceeded gross consumption. §10A.8's deposits and §10A.9's seeker are between them out-earning §9.4's decay — which is the whole question those two sections existed to answer.
+Materials and energy both in surplus, decay running at its baseline clock, neither stress input engaged. **A plateau, not a slope** — and that distinction is the point: a cell that lives fourteen minutes may still be losing half a protein a minute. Survival time is not the measurement; the trend in standing stock is.
 
-**Decay is running at its baseline clock.** Tension 0.221 sits well under `STRESS_ONSET` 0.6, so the stress multiplier is zero and proteins are expiring on the plain 240 s countdown §9.4 designed for. The cell is swollen — 13.7% over rest volume — and stably so, which says the lactate carriers are keeping pace rather than winning outright. That is the intended resting state, not a warning.
-
-**No spiral.** ATP at the ceiling and tension below onset means neither of §9.4's two stress inputs is engaged, so nothing is accelerating anything else.
-
-Two things worth watching rather than acting on:
-
-- **Glycine is the only net-negative residue**, and it is also the most-demanded — 49 of the 181 residues in §14's standing build-out, 27% of the bill. If anything binds first it will be this, which is what §10A.8's per-residue economy predicted.
-- **Leucine ran to 123 while valine sat at 52**, a 2.4× spread the seeker is supposed to flatten by always heading for the lowest count. Not diagnosed. Recorded so it is not mistaken for noise if it recurs.
-
-The distinction this run establishes, and the one a survival time alone cannot: **a cell that lives fourteen minutes may still be losing half a protein a minute.** Survival is not the measurement — the trend in standing stock is. Here both stocks are flat or rising, so it is a plateau.
-
----
+Two things to watch: **glycine is the only net-negative residue** and also the most-demanded (27% of the bill), so it binds first if anything does; and leucine ran to 123 against valine's 52, a spread the seeker is supposed to flatten. Not diagnosed.
 
 ## 17. The multicellular transition (the SA:V wall)
 
