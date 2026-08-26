@@ -113,7 +113,35 @@ let s: ScalarsMsg | null = null;
 let lod = 1;
 let t = 0;
 
-const socket = new WebSocket('ws://localhost:8787');
+/**
+ * Where the simulation lives, and which cell to open.
+ *
+ * Hardcoding `ws://localhost:8787` was correct while the server hosted exactly one world
+ * and only ever ran on this machine. Neither is true now (§15.6), and a page served over
+ * https cannot open a `ws://` socket at all — the browser blocks the mixed content — so
+ * the scheme has to follow the page rather than be asserted.
+ *
+ *   VITE_SIM_URL   explicit override, for pointing a local client at a deployed sim
+ *   ?game=<id>     which cell to open; the server falls back to its own default
+ *
+ * When neither is set this resolves to the same localhost:8787 it always used, so
+ * `npm run server` + `npm run client` is unchanged.
+ */
+function simUrl(): string {
+  const params = new URLSearchParams(location.search);
+  const explicit = (import.meta.env?.['VITE_SIM_URL'] as string | undefined) ?? params.get('sim');
+  const base =
+    explicit ??
+    (location.protocol === 'https:'
+      ? `wss://${location.host}`
+      : location.port === '5173' || location.port === ''
+        ? 'ws://localhost:8787'
+        : `ws://${location.host}`);
+  const game = params.get('game');
+  return game ? `${base}?game=${encodeURIComponent(game)}` : base;
+}
+
+const socket = new WebSocket(simUrl());
 socket.binaryType = 'arraybuffer';
 
 function send(msg: ClientMsg): void {
