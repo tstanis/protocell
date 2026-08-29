@@ -15,6 +15,8 @@
  * the server could not host two games because of it.
  */
 
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { constants } from '@protocell/sim';
@@ -30,6 +32,37 @@ import {
   sessionFrom,
   type Session,
 } from './auth.js';
+
+/**
+ * Load `.env` before anything reads `process.env`.
+ *
+ * `process.loadEnvFile` is built into Node (20.12+), so this needs no dotenv dependency.
+ * Both locations are tried because `npm run server` sets the working directory to
+ * `apps/server` while the natural home for one shared file is the repo root — and a
+ * config file that is silently in the wrong place is the worst kind, since the server
+ * starts perfectly and merely behaves as though you had configured nothing.
+ *
+ * Values already in the real environment always win: a `.env` is for local convenience,
+ * and in production the platform's own secrets must not be overridable by a file that
+ * happened to get deployed.
+ */
+function loadDotEnv(): string[] {
+  const loadedFrom: string[] = [];
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
+  const candidates = [resolve(root, '.env'), resolve(process.cwd(), '.env')];
+  // Deduped, because `npm run server` from the repo root makes both paths the same file
+  // and loading it twice would report two config sources that are one.
+  for (const file of [...new Set(candidates)]) {
+    try {
+      process.loadEnvFile(file);
+      loadedFrom.push(file);
+    } catch {
+      // Absent or unreadable. Both are fine — every variable has a default or is optional.
+    }
+  }
+  return loadedFrom;
+}
+const dotEnvFiles = loadDotEnv();
 
 const PORT = Number(process.env['PORT'] ?? 8787);
 const SEND_HZ = Number(process.env['SEND_HZ'] ?? 30);
@@ -216,6 +249,7 @@ wss.on('connection', (socket, req) => {
 http.listen(PORT, () => {
   const g = games.open(DEFAULT_GAME);
   console.log(`protocell sim server on ws://localhost:${PORT}`);
+  for (const f of dotEnvFiles) console.log(`  config from ${f}`);
   console.log(`  world ${g.world.grid.width}×${g.world.grid.height}, cell R=${g.world.radius.toFixed(1)}`);
   console.log(`  cytoplasm ${g.world.cyto.tileCount} tiles, membrane ${g.world.membraneTiles}`);
   console.log(`  sim ${constants.SIM_HZ} Hz, sending ${SEND_HZ} Hz`);

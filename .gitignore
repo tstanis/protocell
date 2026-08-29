@@ -18,5 +18,7 @@ Thumbs.db
 # Secrets — none exist today, and this is here so that stays true by default.
 .env
 .env.*
+# ...but the template carries no secrets and is the only documentation of what to set.
+!.env.example
 *.pem
 *.key

@@ -111,11 +111,21 @@ no sign-in. Configure it and each Google account gets its own cell instead.
    http://localhost:8787/auth/callback
    ```
 
-3. Run the server with the credentials in the environment:
+3. Put the credentials in a **`.env` at the repo root**:
 
    ```bash
-   GOOGLE_CLIENT_ID=…apps.googleusercontent.com    GOOGLE_CLIENT_SECRET=…    SESSION_SECRET=$(openssl rand -hex 32)    npm run server
+   cp .env.example .env      # then fill in the two Google values
    ```
+
+   The server loads it automatically (node's built-in `process.loadEnvFile` — no dotenv
+   dependency). `.env` is gitignored; `.env.example` is the committed template and is the
+   only place the full list of variables is documented.
+
+   Anything already set in the real environment wins over the file, so a deployed
+   platform's own secrets are never overridden by a `.env` that happened to ship.
+
+   You do **not** need the Google Cloud *project id* anywhere — the client id and secret
+   are the only things this server uses.
 
 | variable | meaning |
 |---|---|
