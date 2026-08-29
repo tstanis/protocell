@@ -92,6 +92,29 @@ export class Enzyme implements Perishable {
     this.tile = tile;
   }
 
+  /**
+   * §15.8 — the enzyme's whole state, including the half-finished catalysis.
+   *
+   * `processT`, `bindP` and `held` are private and are exactly the fields a naive save
+   * would miss: an enzyme restored without them resumes with an empty active site, so a
+   * glucose particle it had already swallowed is silently destroyed and the cell's
+   * throughput dips for one bind-time after every restart.
+   */
+  snapshot(): [number, boolean, number, number, number, number, number] {
+    return [this.tile, this.occupied, this.processT, this.bindP, this.held, this.lactateCarry, this.integrity];
+  }
+
+  static restore(s: [number, boolean, number, number, number, number, number]): Enzyme {
+    const e = new Enzyme(s[0]);
+    e.occupied = s[1];
+    e.processT = s[2];
+    e.bindP = s[3];
+    e.held = s[4];
+    e.lactateCarry = s[5];
+    e.integrity = s[6];
+    return e;
+  }
+
   reset(): void {
     this.occupied = false;
     this.processT = 0;

@@ -104,6 +104,15 @@ export class EnergyPool {
     return paid;
   }
 
+  /** §15.8 — the charge, which is the only part that is not derived from geometry. */
+  snapshot(): number {
+    return this.charge;
+  }
+
+  restore(charge: number): void {
+    this.charge = Math.max(0, Math.min(charge, this.capacity));
+  }
+
   /** Call once per step, after production, before reporting. */
   beginStep(): void {
     this.lastDissipated = 0;

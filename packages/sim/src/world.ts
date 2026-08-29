@@ -89,6 +89,12 @@ import {
 } from './ribosome.js';
 import { EnergyPool } from './energy.js';
 import { chooseTarget, type Stock } from './scarcity.js';
+import {
+  SNAPSHOT_VERSION,
+  type PlaneSnapshot,
+  type TransporterSnapshot,
+  type WorldSnapshot,
+} from './snapshot.js';
 
 /**
  * Radius, in tiles, over which a membrane patch senses the interior concentration (§5a).
@@ -1751,6 +1757,209 @@ export class World {
    * in the same step; osmosis last so volume responds to the solute state the step
    * actually produced.
    */
+  // ── §15.8 saving and restoring ─────────────────────────────────────────────
+
+  /**
+   * Everything about this cell that play can change.
+   *
+   * Geometry is omitted on purpose — see `snapshot.ts`. What is here is the state, and
+   * the test that keeps it honest is `snapshot.test.ts`: a restored world must step
+   * BIT-IDENTICALLY to one that never stopped, for thousands of steps. That is a much
+   * stronger check than "the numbers look right", and it is the only one that catches a
+   * forgotten accumulator, because a dropped remainder is invisible for one step and
+   * compounds forever.
+   */
+  snapshot(): WorldSnapshot {
+    const T = this.grid.tileCount;
+    const planes: PlaneSnapshot[] = [];
+    for (let sp = 0; sp < SPECIES.length; sp++) {
+      const base = sp * T;
+      let live = false;
+      for (let i = 0; i < T; i++) {
+        if (this.grid.amount[base + i] !== 0) { live = true; break; }
+      }
+      if (live) planes.push({ species: sp as SpeciesId, data: this.grid.amount.slice(base, base + T) });
+    }
+
+    const transporters: TransporterSnapshot[] = [];
+    for (const [tile, t] of this.transporters) {
+      const e: TransporterSnapshot = {
+        tile, kind: t.kind, species: t.species, p: t.p, integrity: t.integrity,
+      };
+      if (t.closed !== undefined) e.closed = t.closed;
+      if (t.vmax !== undefined) e.vmax = t.vmax;
+      if (t.rate !== undefined) e.rate = t.rate;
+      if (t.direction !== undefined) e.direction = t.direction;
+      if (t.atpPerUnit !== undefined) e.atpPerUnit = t.atpPerUnit;
+      if (t.lastFlux !== undefined) e.lastFlux = t.lastFlux;
+      transporters.push(e);
+    }
+
+    return {
+      v: SNAPSHOT_VERSION,
+      tick: this.tick,
+      planes,
+      cyto: {
+        volume: this.cyto.volume, tension: this.cyto.tension,
+        stretch: this.cyto.stretch, lysed: this.cyto.lysed,
+      },
+      extra: {
+        volume: this.extra.volume, tension: this.extra.tension,
+        stretch: this.extra.stretch, lysed: this.extra.lysed,
+      },
+      energy: this.energy.snapshot(),
+      inventory: Object.fromEntries(this.inventory.snapshot()) as Partial<Record<AminoType, number>>,
+      grains: this.grains.snapshot(),
+      transporters,
+      enzymes: this.enzymes.map((e) => e.snapshot()),
+      ribosomes: this.ribosomes.map((r) => ({
+        tile: r.tile,
+        integrity: r.integrity,
+        job: r.job ? { ...r.job } : null,
+      })),
+      flagella: this.flagella.map((f) => ({
+        tile: f.tile, dx: f.dx, dy: f.dy, firing: f.firing, integrity: f.integrity,
+      })),
+      vacancies: this.vacancies.map((v) => ({ ...v })),
+      orders: [...this.orders],
+      pendingProteins: [...this.pendingProteins],
+      bot: {
+        x: this.bot.x, y: this.bot.y,
+        targetX: this.bot.targetX, targetY: this.bot.targetY,
+        carrying: this.bot.carrying ? [...this.bot.carrying] : null,
+        inventory: this.bot.inventory.map((g) => ({ ...g })),
+      },
+      build: {
+        phase: this.build.phase,
+        gene: this.build.gene?.id ?? null,
+        chain: [...this.build.chain],
+        fold: this.build.fold,
+        bondT: this.build.bondT,
+        blockedOn: this.build.blockedOn ? { ...this.build.blockedOn } : null,
+        residue: this.build.residue,
+      },
+      motility: { ...this.motility },
+      patchRichness: this.patches.patches.map((pt) => pt.richness),
+      carry: {
+        importCarry: [...this.importCarry],
+        exportCarry: [...this.exportCarry],
+        exportRate: [...this.exportRate],
+        autoSeekT: this.autoSeekT,
+      },
+    };
+  }
+
+  /**
+   * Overwrite this world with a saved one.
+   *
+   * Refuses a snapshot from a different format version rather than reading it wrongly —
+   * a save that half-loads is worse than one that will not load, because the failure is
+   * silent and the cell simply behaves oddly.
+   */
+  restore(s: WorldSnapshot): void {
+    if (s.v !== SNAPSHOT_VERSION) {
+      throw new Error(`snapshot version ${s.v}, expected ${SNAPSHOT_VERSION}`);
+    }
+    const T = this.grid.tileCount;
+
+    this.tick = s.tick;
+
+    // Every plane, not only the saved ones: a plane that is empty in the snapshot must be
+    // empty here too, and this world may have been played before being restored into.
+    this.grid.amount.fill(0);
+    for (const pl of s.planes) this.grid.amount.set(pl.data, pl.species * T);
+
+    this.cyto.volume = s.cyto.volume;
+    this.cyto.tension = s.cyto.tension;
+    this.cyto.stretch = s.cyto.stretch;
+    this.cyto.lysed = s.cyto.lysed;
+    this.extra.volume = s.extra.volume;
+    this.extra.tension = s.extra.tension;
+    this.extra.stretch = s.extra.stretch;
+    this.extra.lysed = s.extra.lysed;
+
+    this.energy.restore(s.energy);
+    this.inventory.restore(s.inventory);
+    this.grains.restore(s.grains);
+
+    this.transporters.clear();
+    for (const t of s.transporters) {
+      const tr: Transporter = {
+        kind: t.kind, species: t.species, p: t.p, integrity: t.integrity,
+      };
+      if (t.closed !== undefined) tr.closed = t.closed;
+      if (t.vmax !== undefined) tr.vmax = t.vmax;
+      if (t.rate !== undefined) tr.rate = t.rate;
+      if (t.direction !== undefined) tr.direction = t.direction;
+      if (t.atpPerUnit !== undefined) tr.atpPerUnit = t.atpPerUnit;
+      if (t.lastFlux !== undefined) tr.lastFlux = t.lastFlux;
+      this.transporters.set(t.tile, tr);
+    }
+
+    this.enzymes.length = 0;
+    for (const e of s.enzymes) this.enzymes.push(Enzyme.restore(e));
+
+    this.ribosomes.length = 0;
+    for (const r of s.ribosomes) {
+      const rb = new Ribosome(r.tile);
+      rb.integrity = r.integrity;
+      rb.job = (r.job as RibosomeJob | null) ?? null;
+      this.ribosomes.push(rb);
+    }
+
+    this.flagella.length = 0;
+    for (const f of s.flagella) this.flagella.push({ ...f });
+
+    this.vacancies.length = 0;
+    for (const v of s.vacancies) this.vacancies.push(v as Vacancy);
+    this.orders.length = 0;
+    this.orders.push(...s.orders);
+    this.pendingProteins.length = 0;
+    this.pendingProteins.push(...s.pendingProteins);
+
+    this.bot.x = s.bot.x;
+    this.bot.y = s.bot.y;
+    this.bot.targetX = s.bot.targetX;
+    this.bot.targetY = s.bot.targetY;
+    this.bot.carrying = s.bot.carrying ? [...s.bot.carrying] : null;
+    this.bot.inventory.length = 0;
+    for (const g of s.bot.inventory) this.bot.inventory.push({ ...g });
+
+    const b = s.build as {
+      phase: BuildState['phase']; gene: GeneId | null; chain: AminoType[];
+      fold: number; bondT: number; blockedOn: BuildState['blockedOn']; residue: AminoType | null;
+    };
+    this.build.phase = b.phase;
+    this.build.gene = b.gene ? GENES[b.gene] : null;
+    this.build.chain = [...b.chain];
+    this.build.fold = b.fold;
+    this.build.bondT = b.bondT;
+    this.build.blockedOn = b.blockedOn;
+    this.build.residue = b.residue;
+
+    Object.assign(this.motility, s.motility);
+
+    this.patches.patches.forEach((pt, i) => {
+      pt.richness = s.patchRichness[i] ?? pt.richness;
+    });
+
+    this.importCarry.clear();
+    for (const [k, v] of s.carry.importCarry) this.importCarry.set(k, v);
+    this.exportCarry.clear();
+    for (const [k, v] of s.carry.exportCarry) this.exportCarry.set(k, v);
+    this.exportRate.clear();
+    for (const [k, v] of s.carry.exportRate) this.exportRate.set(k, v);
+    this.autoSeekT = s.carry.autoSeekT;
+
+    // The extracellular baseline is rebuilt lazily from the cell's world position, and
+    // its cache key is a position that may now be different. Invalidate it so the next
+    // step repaints rather than trusting a baseline built for somewhere else.
+    this.baselineBuiltAt = { x: Number.NaN, y: Number.NaN };
+
+    syncTileCounts(this.grid, [this.cyto, this.extra]);
+    this.energy.setCapacityTiles(this.cyto.tileCount + this.membraneTiles);
+  }
+
   step(): StepStats {
     const wasLysed = this.cyto.lysed;
     this.tick++;

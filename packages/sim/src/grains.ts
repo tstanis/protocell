@@ -239,6 +239,35 @@ export class GrainStore {
     this.seed = seed >>> 0;
   }
 
+  /**
+   * §15.8 — the store, INCLUDING the PRNG seed.
+   *
+   * The seed is the field a save is most likely to forget and the one whose absence is
+   * hardest to notice: a restored cell whose walk restarts from the default seed still
+   * looks completely correct — grains still diffuse, still reach enzymes, still read as
+   * thermal motion — it is simply a different run. Nothing on screen says so. §3.7 makes
+   * the whole simulation replayable from a seed, and that guarantee ends at the first
+   * restore that drops it.
+   *
+   * `nextId` matters for a smaller but sharper reason: ids are how the client tells one
+   * grain from another across frames (§5a), so reusing one makes a newly minted particle
+   * animate as though it were an old one that had teleported.
+   */
+  snapshot(): { seed: number; nextId: number; items: Grain[] } {
+    return {
+      seed: this.seed,
+      nextId: this.nextId,
+      items: this.grains.map((g) => ({ ...g })),
+    };
+  }
+
+  restore(s: { seed: number; nextId: number; items: Grain[] }): void {
+    this.seed = s.seed >>> 0;
+    this.nextId = s.nextId;
+    this.grains.length = 0;
+    for (const g of s.items) this.grains.push({ ...g });
+  }
+
   /** xorshift32. Deterministic, fast, and good enough for Brownian motion. */
   private rand(): number {
     let x = this.seed;

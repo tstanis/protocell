@@ -83,6 +83,11 @@ export class Inventory {
     return out;
   }
 
+  /** §15.8 — overwrite every count. Used only by restore. */
+  restore(counts: Partial<Record<AminoType, number>>): void {
+    for (const t of AMINO_TYPES) this.counts.set(t, Math.max(0, Math.floor(counts[t] ?? 0)));
+  }
+
   snapshot(): Map<AminoType, number> {
     return new Map(this.counts);
   }
