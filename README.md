@@ -98,6 +98,41 @@ paid out of the same ATP field your peptide bonds are — one flagellum costs ab
 enzyme's output — so every second spent swimming is a second not spent building. That
 trade is the whole of §10A.
 
+## Signing in with Google (optional)
+
+Without `GOOGLE_CLIENT_ID` the server runs exactly as it always has: anonymous, one cell,
+no sign-in. Configure it and each Google account gets its own cell instead.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials), create
+   an **OAuth 2.0 Client ID** of type *Web application*.
+2. Add an **Authorized redirect URI**. It must match byte for byte, including the port:
+
+   ```
+   http://localhost:8787/auth/callback
+   ```
+
+3. Run the server with the credentials in the environment:
+
+   ```bash
+   GOOGLE_CLIENT_ID=…apps.googleusercontent.com    GOOGLE_CLIENT_SECRET=…    SESSION_SECRET=$(openssl rand -hex 32)    npm run server
+   ```
+
+| variable | meaning |
+|---|---|
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | from the console. Absent ⇒ sign-in off |
+| `SESSION_SECRET` | signs the session cookie. Generated if unset, which means **every restart signs everyone out**; required in production |
+| `PUBLIC_ORIGIN` | this server's public origin, default `http://localhost:8787`. Must match the redirect URI |
+| `APP_ORIGIN` | where to send the browser after sign-in, default `http://localhost:5173` |
+| `ALLOWED_ORIGINS` | comma-separated browser origins allowed to call `/auth/*` with credentials |
+| `MAX_LIVE_GAMES` | how many cells tick at once; defaults to one per 5.5% of a core |
+
+The cell id is derived from the Google subject (`u:<sub>`) and a `?game=` parameter is
+**ignored** for a signed-in player — honouring it would let anyone open anyone else's cell
+by naming it.
+
+Google will not accept a non-localhost `http://` redirect URI, so anything other than local
+development needs HTTPS.
+
 ## Other commands
 
 ```bash

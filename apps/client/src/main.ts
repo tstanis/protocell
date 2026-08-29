@@ -141,11 +141,83 @@ function simUrl(): string {
   return game ? `${base}?game=${encodeURIComponent(game)}` : base;
 }
 
-const socket = new WebSocket(simUrl());
-socket.binaryType = 'arraybuffer';
+/** The sim server's HTTP origin — the same host as the socket, minus the ws scheme. */
+function apiBase(): string {
+  return simUrl().replace(/^ws/, 'http').replace(/\?.*$/, '');
+}
+
+interface WhoAmI {
+  enabled: boolean;
+  signedIn: boolean;
+  email: string | null;
+  name: string | null;
+}
+
+/**
+ * §15.7 — ask the server who we are before opening a socket.
+ *
+ * `enabled` is what lets one client serve both worlds: a server without Google credentials
+ * reports `enabled: false` and the client connects anonymously exactly as it always has,
+ * so local development needs no OAuth setup. A server WITH sign-in refuses an
+ * unauthenticated upgrade outright, so connecting first and discovering that later would
+ * present as "the server is down".
+ */
+async function whoami(): Promise<WhoAmI> {
+  try {
+    const r = await fetch(`${apiBase()}/auth/me`, { credentials: 'include' });
+    if (!r.ok) throw new Error(String(r.status));
+    return (await r.json()) as WhoAmI;
+  } catch {
+    // Unreachable server, or one too old to have the endpoint. Either way, try to play.
+    return { enabled: false, signedIn: false, email: null, name: null };
+  }
+}
+
+function showSignIn(): void {
+  const veil = document.createElement('div');
+  veil.style.cssText =
+    'position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;' +
+    'background:rgba(8,11,17,0.92);backdrop-filter:blur(3px)';
+  veil.innerHTML =
+    '<div style="max-width:420px;text-align:center;padding:28px 30px;background:#0d1420;' +
+    'border:1px solid rgba(255,255,255,.09);border-radius:14px">' +
+    '<div style="font-size:19px;font-weight:600;margin-bottom:8px">PROTOCELL</div>' +
+    '<div style="font-size:12.5px;color:#8891a0;line-height:1.6;margin-bottom:20px">' +
+    'Sign in to open your cell. You get one, and it keeps living while you are away — ' +
+    'a cell nobody has visited for a while is paused rather than killed.' +
+    '</div>' +
+    `<a href="${apiBase()}/auth/google" style="display:inline-block;font-size:13px;` +
+    'padding:10px 18px;border-radius:8px;background:#1e2836;color:#d6dae2;' +
+    'border:1px solid rgba(255,255,255,.16);text-decoration:none">Sign in with Google</a>' +
+    '</div>';
+  document.body.appendChild(veil);
+}
+
+let socket: WebSocket | null = null;
+
+void whoami().then((me) => {
+  // The server refuses an unauthenticated upgrade outright, so asking first is the
+  // difference between a sign-in prompt and what would otherwise look like an outage.
+  if (me.enabled && !me.signedIn) {
+    showSignIn();
+    return;
+  }
+  if (me.enabled && me.signedIn) {
+    const who = document.createElement('span');
+    who.className = 'conn';
+    who.style.cssText = 'margin-left:10px;font-size:11px;color:#6b7482';
+    who.innerHTML =
+      `${me.email ?? me.name ?? 'signed in'} · ` +
+      `<a href="${apiBase()}/auth/logout" style="color:#8891a0">sign out</a>`;
+    document.querySelector('.hud')?.appendChild(who);
+  }
+  socket = new WebSocket(simUrl());
+  socket.binaryType = 'arraybuffer';
+  attach(socket);
+});
 
 function send(msg: ClientMsg): void {
-  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
 }
 
 function subscribe(): void {
@@ -157,107 +229,118 @@ function subscribe(): void {
   });
 }
 
-socket.addEventListener('open', () => setConn('connected', false));
-socket.addEventListener('close', () => setConn('disconnected — the sim is still running', true));
-socket.addEventListener('error', () => setConn('connection error', true));
+/**
+ * Attach the wire handlers. Called only once we know we are allowed to connect.
+ *
+ * These used to sit at module scope beside a `const socket`, which stopped working when
+ * the sign-in check had to happen first: that check is a fetch, so the socket cannot be
+ * built synchronously any more. Top-level await would have been the tidy fix and it is
+ * not available at this build target — raising the target to reach it would drop Safari
+ * 14 for a syntax convenience, which is a poor trade.
+ */
+function attach(ws: WebSocket): void {
+  ws.addEventListener('open', () => setConn('connected', false));
+  ws.addEventListener('close', () => setConn('disconnected — the sim is still running', true));
+  ws.addEventListener('error', () => setConn('connection error', true));
 
-socket.addEventListener('message', (ev) => {
-  if (ev.data instanceof ArrayBuffer) {
-    frame = decodeFieldFrame(ev.data);
-    // Rebuild tint and dot targets ONCE PER RECEIVED FRAME (~30 Hz). The old code redid
-    // all of it inside draw() at ~60 Hz — twice as often as the data actually changed.
-    fx.ingest(frame, nameById, tilePx(), isInterior);
-    return;
-  }
-  const msg = JSON.parse(ev.data as string) as ServerMsg;
-  if (msg.t === 'hello') {
-    hello = {
-      worldWidth: msg.worldWidth,
-      worldHeight: msg.worldHeight,
-      membraneTiles: msg.membraneTiles,
-      cellRadius: msg.cellRadius,
-    };
-    membraneSet = new Set(msg.membraneTiles);
-    gateSet = new Set(msg.gateTiles);
-    gateList = msg.gateTiles;
-    // Build the soft-body from the REAL membrane tiles, in canvas px, so the ooze is
-    // anchored to where the simulation says the membrane is (§2.1).
-    const k0 = Math.min(W / msg.worldWidth, H / msg.worldHeight);
-    membrane = new SoftBody(
-      msg.membraneTiles.map((tile) => ({
-        x: ((tile % msg.worldWidth) + 0.5) * k0,
-        y: (Math.floor(tile / msg.worldWidth) + 0.5) * k0,
-      })),
-    );
-    builtAtK = k0; // baseline for the zoom rescale
-    nameById = msg.species;
-    speciesByName = Object.fromEntries(Object.entries(msg.species).map(([id, n]) => [n, Number(id)]));
-    subscribe();
-    setStatus(
-      'A bare cell, and you are the nanobot inside it — the only assembler this cell has ' +
-        '(§1.2). Click to move. Go to the nucleus, take the glycolysis blueprint, then ' +
-        'walk the amino acids into a protein one bond at a time.',
-    );
-  } else if (msg.t === 'scalars') {
-    s = msg;
-    // Seat a queued transporter the moment the bot gets within reach.
-    if (pendingDeployTile !== null) {
-      if (!s.bot.carrying) {
-        pendingDeployTile = null;
-      } else {
-        const tx = (pendingDeployTile % hello!.worldWidth) + 0.5;
-        const ty = Math.floor(pendingDeployTile / hello!.worldWidth) + 0.5;
-        if (Math.hypot(s.bot.x - tx, s.bot.y - ty) <= 2.6) {
-          send({ t: 'command', cmd: { op: 'deploy', tile: pendingDeployTile } });
+  ws.addEventListener('message', (ev) => {
+    if (ev.data instanceof ArrayBuffer) {
+      frame = decodeFieldFrame(ev.data);
+      // Rebuild tint and dot targets ONCE PER RECEIVED FRAME (~30 Hz). The old code redid
+      // all of it inside draw() at ~60 Hz — twice as often as the data actually changed.
+      fx.ingest(frame, nameById, tilePx(), isInterior);
+      return;
+    }
+    const msg = JSON.parse(ev.data as string) as ServerMsg;
+    if (msg.t === 'hello') {
+      hello = {
+        worldWidth: msg.worldWidth,
+        worldHeight: msg.worldHeight,
+        membraneTiles: msg.membraneTiles,
+        cellRadius: msg.cellRadius,
+      };
+      membraneSet = new Set(msg.membraneTiles);
+      gateSet = new Set(msg.gateTiles);
+      gateList = msg.gateTiles;
+      // Build the soft-body from the REAL membrane tiles, in canvas px, so the ooze is
+      // anchored to where the simulation says the membrane is (§2.1).
+      const k0 = Math.min(W / msg.worldWidth, H / msg.worldHeight);
+      membrane = new SoftBody(
+        msg.membraneTiles.map((tile) => ({
+          x: ((tile % msg.worldWidth) + 0.5) * k0,
+          y: (Math.floor(tile / msg.worldWidth) + 0.5) * k0,
+        })),
+      );
+      builtAtK = k0; // baseline for the zoom rescale
+      nameById = msg.species;
+      speciesByName = Object.fromEntries(Object.entries(msg.species).map(([id, n]) => [n, Number(id)]));
+      subscribe();
+      setStatus(
+        'A bare cell, and you are the nanobot inside it — the only assembler this cell has ' +
+          '(§1.2). Click to move. Go to the nucleus, take the glycolysis blueprint, then ' +
+          'walk the amino acids into a protein one bond at a time.',
+      );
+    } else if (msg.t === 'scalars') {
+      s = msg;
+      // Seat a queued transporter the moment the bot gets within reach.
+      if (pendingDeployTile !== null) {
+        if (!s.bot.carrying) {
           pendingDeployTile = null;
+        } else {
+          const tx = (pendingDeployTile % hello!.worldWidth) + 0.5;
+          const ty = Math.floor(pendingDeployTile / hello!.worldWidth) + 0.5;
+          if (Math.hypot(s.bot.x - tx, s.bot.y - ty) <= 2.6) {
+            send({ t: 'command', cmd: { op: 'deploy', tile: pendingDeployTile } });
+            pendingDeployTile = null;
+          }
         }
       }
+    } else if (msg.t === 'event') {
+      if (msg.kind === 'lysed') {
+        setStatus(
+          'LYSED. Trapped lactate raised internal osmolarity, water flooded in, and the ' +
+            'membrane could not hold. The carrier is life support, not cleanup.',
+        );
+      } else if (msg.kind === 'folded') {
+        setStatus(
+          s?.build.productKind === 'transporter'
+            ? 'Folded. Now carry it to the membrane: click the tile you want it seated in, ' +
+              'and the nanobot will walk it over and embed it there. Where it goes matters — ' +
+              'a glucose channel does nothing on the face pointing at the amino-acid zone.'
+            : s?.build.productKind === 'flagellum'
+            ? 'Folded. Click the membrane tile to anchor it in — and pick the side carefully: ' +
+              'a flagellum thrusts along the inward normal, so it pushes the cell AWAY from ' +
+              'the face it sits on. Seat it on the east side to swim west.'
+            : s?.build.productKind === 'ribosome'
+            ? 'Folded. A ribosome goes INSIDE the cell, not in the wall — walk it to the ' +
+              'machinery you want kept alive and release it there. It repairs whatever fails ' +
+              'within its reach, so where you put it decides what survives (§9.5).'
+            : 'Folded — the shape IS the function. An enzyme is a free agent: walk the ' +
+              'nanobot to where the substrate is, then press "Release enzyme here".',
+        );
+      } else if (msg.kind === 'transporterPlaced' && msg.tile !== undefined) {
+        placedTransporters.add(msg.tile);
+        setStatus('Transporter seated. Its permeability for that species jumps immediately — transport has already started.');
+      } else if (msg.kind === 'flagellumPlaced') {
+        setStatus(
+          'Flagellum anchored. It thrusts along the inward normal — away from the face it ' +
+            'sits on — and costs 3.6 ATP/s only while firing, about half an enzyme\'s output. ' +
+            'Right-click anywhere to swim that way; coasting is free.',
+        );
+      } else if (msg.kind === 'enzymePlaced') {
+        setStatus('Enzyme released into the cytoplasm. It works wherever substrate reaches it, so distance from supply is a real cost.');
+      } else if (msg.kind === 'deployRefused') {
+        // The sim already knows exactly why, and used to have it thrown away in favour of
+        // one generic sentence that guessed at the cause.
+        setStatus(
+          msg.reason
+            ? `Cannot deploy there — ${msg.reason}`
+            : 'Cannot deploy there. A transporter or flagellum must go into a membrane tile the nanobot can reach.',
+        );
+      }
     }
-  } else if (msg.t === 'event') {
-    if (msg.kind === 'lysed') {
-      setStatus(
-        'LYSED. Trapped lactate raised internal osmolarity, water flooded in, and the ' +
-          'membrane could not hold. The carrier is life support, not cleanup.',
-      );
-    } else if (msg.kind === 'folded') {
-      setStatus(
-        s?.build.productKind === 'transporter'
-          ? 'Folded. Now carry it to the membrane: click the tile you want it seated in, ' +
-            'and the nanobot will walk it over and embed it there. Where it goes matters — ' +
-            'a glucose channel does nothing on the face pointing at the amino-acid zone.'
-          : s?.build.productKind === 'flagellum'
-          ? 'Folded. Click the membrane tile to anchor it in — and pick the side carefully: ' +
-            'a flagellum thrusts along the inward normal, so it pushes the cell AWAY from ' +
-            'the face it sits on. Seat it on the east side to swim west.'
-          : s?.build.productKind === 'ribosome'
-          ? 'Folded. A ribosome goes INSIDE the cell, not in the wall — walk it to the ' +
-            'machinery you want kept alive and release it there. It repairs whatever fails ' +
-            'within its reach, so where you put it decides what survives (§9.5).'
-          : 'Folded — the shape IS the function. An enzyme is a free agent: walk the ' +
-            'nanobot to where the substrate is, then press "Release enzyme here".',
-      );
-    } else if (msg.kind === 'transporterPlaced' && msg.tile !== undefined) {
-      placedTransporters.add(msg.tile);
-      setStatus('Transporter seated. Its permeability for that species jumps immediately — transport has already started.');
-    } else if (msg.kind === 'flagellumPlaced') {
-      setStatus(
-        'Flagellum anchored. It thrusts along the inward normal — away from the face it ' +
-          'sits on — and costs 3.6 ATP/s only while firing, about half an enzyme\'s output. ' +
-          'Right-click anywhere to swim that way; coasting is free.',
-      );
-    } else if (msg.kind === 'enzymePlaced') {
-      setStatus('Enzyme released into the cytoplasm. It works wherever substrate reaches it, so distance from supply is a real cost.');
-    } else if (msg.kind === 'deployRefused') {
-      // The sim already knows exactly why, and used to have it thrown away in favour of
-      // one generic sentence that guessed at the cause.
-      setStatus(
-        msg.reason
-          ? `Cannot deploy there — ${msg.reason}`
-          : 'Cannot deploy there. A transporter or flagellum must go into a membrane tile the nanobot can reach.',
-      );
-    }
-  }
-});
+  });
+}
 
 function setConn(text: string, bad: boolean): void {
   const el = document.getElementById('conn')!;
