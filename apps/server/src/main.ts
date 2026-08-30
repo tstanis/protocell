@@ -157,7 +157,10 @@ const http = createServer((req, res) => {
   // sign-in: a health check that fails when a dependency wobbles makes the platform kill
   // and restart a server that was serving everybody perfectly well, turning a partial
   // outage into a total one.
-  if (url.pathname === '/healthz') {
+  // NOT `/healthz`: Cloud Run's frontend intercepts that exact path and returns its own
+  // 404, so the request never reaches the container. Verified against the deployed
+  // service — `/healthz` 404s from Google while `/healthz2` and `/_health` both arrive.
+  if (url.pathname === '/_health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, games: games.size, live: games.liveCount }));
     return;
@@ -292,23 +295,32 @@ function attachClient(socket: import('ws').WebSocket, game: Game): void {
 }
 
 /**
- * Autosave, staggered.
+ * Autosave: each live cell on its own schedule.
  *
- * The sweep runs every second and writes only the slice of cells due this second, rather
- * than every cell every AUTOSAVE_S. Saving them all at once would produce a thundering
- * herd — hundreds of gzips and hundreds of PUTs landing on one tick — which shows up as a
- * latency spike in the simulation for everybody.
+ * Every cell carries its own due time, set on first sight to a random point inside the
+ * interval, so the population spreads itself without anyone coordinating. A cell that is
+ * not dirty costs nothing to skip and its clock still advances, so an idle cell is written
+ * once and then left alone.
+ *
+ * On failure the next attempt backs off rather than retrying every second — a store that
+ * is rate-limiting or down should not be hammered by the thing it is rate-limiting.
  */
-let sweep = 0;
 setInterval(() => {
-  const live = [...games.liveGames()];
-  if (live.length > 0) {
-    const slice = Math.max(1, Math.ceil(live.length / AUTOSAVE_S));
-    for (let i = 0; i < slice; i++) {
-      const g = live[(sweep + i) % live.length];
-      if (g) void games.save(g);
+  const now = Date.now();
+  for (const g of games.liveGames()) {
+    if (g.nextSaveAt === 0) {
+      g.nextSaveAt = now + Math.random() * AUTOSAVE_S * 1000;
+      continue;
     }
-    sweep = (sweep + slice) % live.length;
+    if (now < g.nextSaveAt) continue;
+    const wasDirty = g.dirty;
+    g.nextSaveAt = now + AUTOSAVE_S * 1000;
+    if (wasDirty) {
+      void games.save(g).then(() => {
+        // Still dirty means the write did not land; wait longer before trying again.
+        if (g.dirty) g.nextSaveAt = Date.now() + AUTOSAVE_S * 1000 * 2;
+      });
+    }
   }
   void games.maintain();
 }, 1000);
@@ -341,7 +353,9 @@ if (store.warm) {
 }
 
 http.listen(PORT, () => {
-  const g = games.open(DEFAULT_GAME);
+  // With sign-in on, every cell is `u:<sub>` and the anonymous default is unreachable —
+  // so creating it would tick a cell nobody can ever visit, at 5.5% of a core, forever.
+  const g = auth ? new Game('__probe__') : games.open(DEFAULT_GAME);
   console.log(`protocell sim server on ws://localhost:${PORT}`);
   for (const f of dotEnvFiles) console.log(`  config from ${f}`);
   console.log(`  world ${g.world.grid.width}×${g.world.grid.height}, cell R=${g.world.radius.toFixed(1)}`);

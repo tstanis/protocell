@@ -109,6 +109,19 @@ export class Game {
    */
   savedAtTick = -1;
 
+  /**
+   * Wall-clock ms after which this cell is due an autosave.
+   *
+   * Per cell, because the obvious alternative is wrong in a way that only shows up at
+   * small numbers. Slicing the live set — "save `ceil(live / AUTOSAVE_S)` cells per
+   * second" — spreads the load correctly for hundreds of cells and degenerates for one:
+   * `ceil(1/300)` is 1, so a single live cell was saved EVERY SECOND rather than every
+   * five minutes. Found in production, as `GCS save solo: 429` — Google rate-limits
+   * writes to a single object at about one per second, so the bug reported itself. It
+   * would otherwise just have been a bill.
+   */
+  nextSaveAt = 0;
+
   get dirty(): boolean {
     return this.world.tick !== this.savedAtTick;
   }

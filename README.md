@@ -180,6 +180,9 @@ and *appearing* to work:
 | `--max-instances 1` | A cell lives in RAM in **one process**. A second instance cannot see it, so requests routed there open a *second copy* of the same cell from storage — and both would then write to the same object. This is the one that corrupts data rather than merely degrading it |
 | `--timeout 3600` | Cloud Run caps a request — including a WebSocket — at 60 minutes. The client reconnects and resumes, so this sets how often that happens rather than whether it works |
 
+Health check is at **`/_health`**, not `/healthz`: Cloud Run's frontend intercepts that
+exact path and returns its own 404, so the request never reaches the container.
+
 Because `max-instances 1` is a hard ceiling, **this deployment does not scale horizontally**.
 That is a property of a stateful simulation, not an oversight: growing past one machine
 means sharding players across processes by their Google subject, not adding replicas.
