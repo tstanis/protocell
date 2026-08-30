@@ -133,6 +133,20 @@ async function ensureSecrets(): Promise<void> {
     await run(['secrets', 'versions', 'add', secretName, '--project', PROJECT, '--data-file', '-'],
       { stdin: value, quiet: true });
     console.log(`  ${secretName} <- ${envName} (new version)`);
+
+    // And let the runtime identity read it. Creating a secret does NOT grant access to
+    // it, so without this the deploy succeeds and the container then fails to start with
+    // a permission error on a secret you just watched be created — which reads as the
+    // secret being broken rather than as an IAM gap.
+    if (SA) {
+      await run([
+        'secrets', 'add-iam-policy-binding', secretName, '--project', PROJECT,
+        '--member', `serviceAccount:${SA}`, '--role', 'roles/secretmanager.secretAccessor',
+      ], { quiet: true });
+      console.log(`    granted secretAccessor to ${SA}`);
+    } else {
+      console.log('    ! CLOUD_RUN_SERVICE_ACCOUNT unset — grant secretAccessor by hand');
+    }
   }
 }
 
