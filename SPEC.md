@@ -96,6 +96,8 @@ A grid is *fixed space with variable content*; a cell is *variable space with it
 
 §2.1 and §2.4 state the two-truths-one-costume rule as a discipline. Discipline is not enough — the prototypes prove it, having inverted the rule in five files out of nine (§16.2). So the separation is **structural**: the simulation runs as a standalone Node process that holds all state, and renderers are separate client processes that connect to it over WebSocket. A renderer cannot corrupt the truth layer because it has no reference to it.
 
+**Qualified by §15.6 once this was hosted.** Ticking costs 5.5% of a core per cell, so a public server keeps the promise for anyone who has played recently and freezes the rest — the version of it nobody is present to observe.
+
 - **The sim owns the clock.** It advances in fixed `SIM_DT` steps (§3.3) and never sees a frame delta. It ticks whether or not any client is attached — which is, exactly, §2.3's thesis about what being alive costs.
 - **Clients subscribe to views, and hold no truth.** A client declares a region, a resolution, and a set of species; the server downsamples server-side and sends only that. This makes §3.5's fractal zoom a *protocol* feature rather than a rendering special case: zooming out is a new subscription, not different render code. §11.4's layer overlays are the species list in the same subscription.
 - **Commands are the only channel by which a client affects the sim.** Placing a transporter, blebbing, building an enzyme — all are discrete messages. Combined with a seeded PRNG this makes the whole simulation deterministic and replayable from a command log, for free.
@@ -1133,6 +1135,115 @@ The general rule this is an instance of: **the truth layer is exact to the pract
 ### 15.5 Constants discipline
 One `packages/sim/src/constants.ts`, matching §13 exactly, every value carrying its derivation as a comment. §13 has demanded this from the start; the prototypes all violate it, which is why they drifted into three incompatible economies.
 
+### 15.6 Many cells on one server
+
+The server hosts a `Game` per cell — world, clock, clients, event queue — and a registry
+decides which of them tick. Every one of those was a module-level global while there was
+one game, which is why there could only be one.
+
+**Ticking is the cost.** Measured: 0.46 ms/step, so 55 ms of CPU per wall-second per live
+cell — **5.5% of one core**, ~18 per core saturated, ~48 on a 4-vCPU box.
+
+That collides with §2.3, which makes it a principle that the sim runs whether or not
+anyone watches. Honoured literally, cost scales with **total signups rather than active
+players**. So a cell can be frozen — it keeps every byte and stops being stepped — and
+three tiers fall out:
+
+```
+live    ticking, in RAM      bounded by CPU   MAX_LIVE_GAMES
+warm    in RAM, not ticking  bounded by RAM   MAX_RESIDENT_GAMES
+cold    in the store only    unbounded
+```
+
+The LRU only ever freezes an **unattached** cell, so §2.3 survives for anyone actually
+playing: close the tab, come back in ten minutes, and your cell has been living without
+you. What is given up is the cell of someone who has not played for a week.
+
+**Catch-up on reconnect does not work**, and the arithmetic is the same arithmetic:
+replaying a gap costs the same 5.5% of a core per second of absence, so ten minutes is
+33 s of compute and an hour is 3.3 minutes. A frozen cell resumes where it stopped and
+`hello` carries `frozenSeconds`, because resuming silently would read as lost time.
+
+### 15.7 One cell per account
+
+Google sign-in, Authorization Code flow, server-side: the browser carries only an opaque
+code and the ID token is fetched by the server directly from Google over TLS.
+
+**The whole authorisation model is one line** — the cell id is `u:<google-sub>`, *derived*
+rather than stored. No mapping row to fall out of step, and no way for two accounts to
+reach one cell. A `?game=` parameter is **ignored** for a signed-in player rather than
+merged; honouring it would let anyone open anyone else's cell by naming it.
+
+Sessions are a signed cookie (HMAC-SHA256, constant-time compare), not a session table:
+the payload is a stable subject id, and a row to look up a value we already hold buys
+nothing. Unauthenticated upgrades are refused at the handshake, because a socket that
+connects and can do nothing is indistinguishable from a server that is down.
+
+Not configured is a supported state: without `GOOGLE_CLIENT_ID` the server is anonymous
+and unchanged, so local development needs no OAuth setup.
+
+### 15.8 A save is a snapshot, not a replay
+
+§3.7 records that a seeded PRNG plus a command log gives "exact replay for free". True,
+and for the wrong problem: **replay is O(playtime)**, so at §15.6's cost a two-hour save
+takes six minutes of CPU to open. Fine for reproducing a bug offline, useless as a load
+screen.
+
+`World.snapshot()` omits all geometry — grid, role and compartment maps, neighbour tables,
+the nucleus, patch positions — because it is a pure function of construction and never
+changes. Patches carry `richness` only. Planes are emitted only when non-empty: 2 of 13
+are live, since §5c made ATP a pool and §5b made residues an inventory.
+
+The test is **divergence**, not plausibility: restore into a fresh world, step both 3,600
+ticks, demand bit-identical. A forgotten accumulator is invisible for one step and
+compounds forever, so "the numbers look right" is not evidence.
+
+### 15.9 Storage
+
+A cell is an opaque blob keyed by its id — no queries, no joins, no search — so this is a
+key-value store rather than a database. Metrics come from extracting saves into a
+warehouse, not from making the hot path carry a schema.
+
+```
+31 KB gzipped per cell, 3 ms to produce
+10,000 cells = 305 MB, under a cent a month
+```
+
+**Bytes are free and requests are not**, and that sets the policy: save on transitions —
+disconnect, freeze, shutdown — with a slow autosave as crash insurance only, and never
+rewrite a cell that has not stepped. Writing every live cell every minute would cost ~$60
+a month in requests alone.
+
+Two failure modes worth naming, because both are silent:
+
+- The file store writes, **fsyncs, then renames**. Rename is atomic but only publishes
+  bytes that are on disk; without the fsync a crash leaves a correctly-named zero-length
+  save that has replaced a good one.
+- A failed load **refuses the connection** rather than handing over a blank cell. An empty
+  world would be overwritten by the next autosave, turning a transient storage fault into
+  permanent data loss.
+
+### 15.10 Deploying
+
+One container serves the sim and the built client from **one origin**, which removes CORS
+entirely, lets the session cookie work with plain `SameSite=Lax`, and collapses
+`PUBLIC_ORIGIN`, `APP_ORIGIN` and the OAuth redirect host into one value that cannot
+disagree with itself.
+
+On Cloud Run, four flags are load-bearing and three of them are the difference between
+working and *appearing* to work:
+
+| flag | consequence of omitting it |
+|---|---|
+| `--no-cpu-throttling` | CPU is granted only during a request, so the cell silently freezes when the tab closes — §2.3 defeated, with no symptom but a number that did not move |
+| `--max-instances 1` | A cell lives in RAM in one process; a second instance opens a second copy of the same cell and both write the same object. Corrupts rather than degrades |
+| `--min-instances 1` | Scale-to-zero discards every resident cell |
+| `--timeout 3600` | Sets how often the socket is cut, not whether it works — the client reconnects and resumes |
+
+**This does not scale horizontally**, and that is a property of a stateful simulation
+rather than an oversight. Growing past one machine means sharding players by subject, not
+adding replicas.
+
 ---
 
 ## 16. Verification & known defects
@@ -1227,7 +1338,31 @@ That is a gap in kind, not in coverage. A mechanism test asks *does this do the 
 
 > **A constant that carries its derivation still needs a test that the derivation is still true.** Comments record what was balanced against what at the time of writing; only an assertion notices when the other side moves.
 
-### 16.6 Current state — tick 100,000
+### 16.6 Three defects only a real deployment could show
+
+None of these were reachable from the test suite, and each was found by reading logs from
+a running service rather than by reasoning about the code.
+
+- **A 300x write amplification.** The autosave sliced the live set — "save
+  `ceil(live / AUTOSAVE_S)` cells per second" — which is correct for hundreds of cells and
+  degenerates for one: `ceil(1/300)` is 1, so a single cell was written every second
+  instead of every five minutes. 3,600 writes an hour against 12. It surfaced only because
+  GCS rate-limits writes to one object at ~1/s and returned 429; without that it would
+  have been a silent bill. Each cell now carries its own due time.
+
+  > A rate expressed as *work per tick* is not a rate per item. It degrades toward
+  > "everything, constantly" exactly when the population is small — which is the case every
+  > deployment starts in.
+
+- **`/healthz` never reached the container.** Cloud Run's frontend intercepts that exact
+  path and serves its own 404. Verified against the deployed service: `/healthz` 404s from
+  Google while `/healthz2`, `/_health` and an arbitrary path all arrive.
+
+- **An unreachable cell ticking forever.** With sign-in on, every cell is `u:<sub>`, so the
+  anonymous default was created at boot and could never be visited — 5.5% of a core spent
+  on a cell that had already starved to `ATP=0`.
+
+### 16.7 Current state — tick 100,000
 
 First sustained-survival run: **tick 100,000 = 13 min 53 s**, alive, hand-driven. Acceptance evidence for §9.4, §9.5, §10A.8 and §10A.9 *together*, which matters because each was previously observed to fix a symptom the next one re-broke.
 
