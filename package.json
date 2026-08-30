@@ -18,7 +18,8 @@
     "server": "npm run dev --workspace @protocell/server",
     "client": "npm run dev --workspace @protocell/client",
     "sweep": "tsx scripts/sweep.ts",
-    "play-intro": "node scripts/playIntro.mjs"
+    "play-intro": "node scripts/playIntro.mjs",
+    "gcs:check": "tsx scripts/gcs-check.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

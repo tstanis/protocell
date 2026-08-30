@@ -8,6 +8,8 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { decodeFieldFrame, type ScalarsMsg, type ServerMsg } from '@protocell/protocol';
 
@@ -115,7 +117,20 @@ function waitFor<T>(ws: WebSocket, pred: (m: unknown) => T | null, ms = 25000): 
 
 beforeAll(async () => {
   server = spawn('npx', ['tsx', 'apps/server/src/main.ts'], {
-    env: { ...process.env, PORT: String(PORT) },
+    // The test owns its environment. Inheriting a developer's .env made these tests fail
+    // the moment sign-in was configured locally: the spawned server started demanding
+    // auth, refused the unauthenticated upgrade with a 401, and the harness reported
+    // "server did not come up" — which is true of the socket and false of the server.
+    //
+    // Storage is redirected too, so a run never touches a real bucket or a real cell.
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      GOOGLE_CLIENT_ID: '',
+      GOOGLE_CLIENT_SECRET: '',
+      GCS_BUCKET: '',
+      DATA_DIR: join(tmpdir(), `protocell-wire-${process.pid}`),
+    },
     stdio: 'ignore',
     shell: process.platform === 'win32',
   });

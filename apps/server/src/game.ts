@@ -99,6 +99,20 @@ export class Game {
   /** Seconds the cell spent frozen since it was last thawed. */
   frozenSeconds = 0;
 
+  /**
+   * The tick this cell was last written at, so an unchanged cell is never rewritten.
+   *
+   * Bytes are free and requests are not (§15.9), and a frozen cell would otherwise be
+   * saved identically on every autosave sweep forever. -1 means "never saved", which is
+   * distinct from "saved at tick 0" — a brand new cell that has not stepped still needs
+   * its first write.
+   */
+  savedAtTick = -1;
+
+  get dirty(): boolean {
+    return this.world.tick !== this.savedAtTick;
+  }
+
   private readonly scratch: Float32Array;
 
   constructor(id: string) {

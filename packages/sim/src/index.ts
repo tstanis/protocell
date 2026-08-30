@@ -92,4 +92,10 @@ export { Rng } from './rng.js';
 export { Ribosome, RIBOSOME_REACH, RIBOSOME_BOND_TIME, inReach } from './ribosome.js';
 export { MEAN_LIFETIME, STRESS_FACTOR, REPAIR_AT, efficiency, working, worn } from './denature.js';
 export { SWITCH_MARGIN, chooseTarget, type Stock } from './scarcity.js';
+export {
+  SNAPSHOT_VERSION,
+  type PlaneSnapshot,
+  type TransporterSnapshot,
+  type WorldSnapshot,
+} from './snapshot.js';
 export { grainUnit, isDiscrete, PARTICLE } from './grains.js';

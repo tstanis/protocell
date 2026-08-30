@@ -15,6 +15,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Saved cells — the local store's default location. State, never source.
+data/
+
 # Secrets — none exist today, and this is here so that stays true by default.
 .env
 .env.*
@@ -22,3 +25,4 @@ Thumbs.db
 !.env.example
 *.pem
 *.key
+protocell-507021-b36da00e05d1.json

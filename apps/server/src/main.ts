@@ -22,7 +22,8 @@ import { WebSocketServer } from 'ws';
 import { constants } from '@protocell/sim';
 import type { ClientMsg } from '@protocell/protocol';
 import { Game, type Client } from './game.js';
-import { GameRegistry, MAX_LIVE_GAMES } from './registry.js';
+import { AUTOSAVE_S, GameRegistry, MAX_LIVE_GAMES, MAX_RESIDENT_GAMES } from './registry.js';
+import { loadStore } from './store.js';
 import {
   beginLogin,
   cellIdFor,
@@ -76,7 +77,8 @@ const SEND_HZ = Number(process.env['SEND_HZ'] ?? 30);
  */
 const DEFAULT_GAME = process.env['DEFAULT_GAME'] ?? 'solo';
 
-const games = new GameRegistry();
+const store = loadStore();
+const games = new GameRegistry(store);
 
 /**
  * Null when GOOGLE_CLIENT_ID is unset, which is a supported state: the server then
@@ -209,7 +211,23 @@ wss.on('connection', (socket, req) => {
     ? cellIdFor(session)
     : (url.searchParams.get('game') ?? DEFAULT_GAME).slice(0, 64);
 
-  const game: Game = games.open(id);
+  // Faulting a cold cell in is a `load` from the store, so this is async — and the socket
+  // may already be gone by the time it lands, which is normal rather than exceptional.
+  void games.openAsync(id).then((game: Game) => {
+    if (socket.readyState !== socket.OPEN) {
+      games.release(game);
+      return;
+    }
+    attachClient(socket, game);
+  }).catch((e: unknown) => {
+    // Refuse rather than hand over a blank cell: an empty world would be overwritten by
+    // the next autosave, turning a transient storage fault into permanent data loss.
+    console.error(`open ${id} failed:`, (e as Error).message);
+    socket.close(1011, 'could not load your cell');
+  });
+});
+
+function attachClient(socket: import('ws').WebSocket, game: Game): void {
   const client: Client = { socket, view: null, game };
   game.clients.add(client);
 
@@ -244,7 +262,56 @@ wss.on('connection', (socket, req) => {
   };
   socket.on('close', drop);
   socket.on('error', drop);
-});
+}
+
+/**
+ * Autosave, staggered.
+ *
+ * The sweep runs every second and writes only the slice of cells due this second, rather
+ * than every cell every AUTOSAVE_S. Saving them all at once would produce a thundering
+ * herd — hundreds of gzips and hundreds of PUTs landing on one tick — which shows up as a
+ * latency spike in the simulation for everybody.
+ */
+let sweep = 0;
+setInterval(() => {
+  const live = [...games.liveGames()];
+  if (live.length > 0) {
+    const slice = Math.max(1, Math.ceil(live.length / AUTOSAVE_S));
+    for (let i = 0; i < slice; i++) {
+      const g = live[(sweep + i) % live.length];
+      if (g) void games.save(g);
+    }
+    sweep = (sweep + slice) % live.length;
+  }
+  void games.maintain();
+}, 1000);
+
+/**
+ * Save everything before exiting.
+ *
+ * Deploys are frequent and PLANNED, so losing a player's progress to your own rollout is
+ * the least excusable kind of data loss. The handler is idempotent because a platform
+ * that does not see the process exit will send SIGKILL after its grace period, and a
+ * second SIGTERM in the meantime must not start a second flush.
+ */
+let shuttingDown = false;
+async function shutdown(sig: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const t0 = Date.now();
+  const { saved, missed } = await games.saveAll();
+  console.log(`${sig} — saved ${saved} cells in ${Date.now() - t0} ms` + (missed ? `, ${missed} MISSED` : ''));
+  process.exit(0);
+}
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(sig, () => void shutdown(sig));
+}
+
+// Pay the token exchange and TLS handshake now: measured, the first GCS write costs
+// ~2 s and the fourth ~200 ms, and there is no reason for a player to absorb that.
+if (store.warm) {
+  void store.warm().catch((e: unknown) => console.error(`  ! storage warm-up failed: ${(e as Error).message}`));
+}
 
 http.listen(PORT, () => {
   const g = games.open(DEFAULT_GAME);
@@ -253,7 +320,8 @@ http.listen(PORT, () => {
   console.log(`  world ${g.world.grid.width}×${g.world.grid.height}, cell R=${g.world.radius.toFixed(1)}`);
   console.log(`  cytoplasm ${g.world.cyto.tileCount} tiles, membrane ${g.world.membraneTiles}`);
   console.log(`  sim ${constants.SIM_HZ} Hz, sending ${SEND_HZ} Hz`);
-  console.log(`  up to ${MAX_LIVE_GAMES} cells ticking at once; default cell "${DEFAULT_GAME}"`);
+  console.log(`  up to ${MAX_LIVE_GAMES} cells ticking, ${MAX_RESIDENT_GAMES} resident; default cell "${DEFAULT_GAME}"`);
+  console.log(`  storage: ${store.kind}, autosave every ${AUTOSAVE_S}s (staggered)`);
   if (auth) {
     console.log(`  Google sign-in ON — one cell per account`);
     console.log(`    redirect URI (must match Google exactly): ${auth.origin}/auth/callback`);
