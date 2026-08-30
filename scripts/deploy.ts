@@ -112,40 +112,61 @@ async function serviceUrl(): Promise<string | null> {
   }
 }
 
-async function ensureSecrets(): Promise<void> {
+/**
+ * Make sure every secret exists and the runtime identity can read it.
+ *
+ * Runs on EVERY deploy, not only behind `--push-secrets`, because the failure it prevents
+ * is genuinely misleading: a deploy that references a secret which does not exist is
+ * reported by Cloud Run as
+ *
+ *   Permission denied on secret: .../protocell-session-secret/versions/latest
+ *
+ * — which sends you hunting for an IAM problem that is not there. Creating a secret also
+ * does not grant access to it, so both halves have to be handled or the container deploys
+ * and then fails to start.
+ *
+ * `--push-secrets` additionally writes a NEW version from `.env`, which is how you rotate
+ * a value. Without it an existing secret is left exactly as it is.
+ */
+async function ensureSecrets(rotate: boolean): Promise<void> {
   for (const [envName, secretName] of Object.entries(SECRETS)) {
-    const value = process.env[envName];
-    if (!value) {
-      console.error(`  ! ${envName} is not in .env — cannot push it`);
-      continue;
-    }
     const exists = await run(
       ['secrets', 'describe', secretName, '--project', PROJECT, '--format', 'value(name)'],
       { quiet: true },
     ).then(() => true).catch(() => false);
 
-    if (!exists) {
-      await run(['secrets', 'create', secretName, '--project', PROJECT, '--replication-policy', 'automatic'],
-        { quiet: true });
-      console.log(`  created secret ${secretName}`);
-    }
-    // Over stdin, so the value is never an argument.
-    await run(['secrets', 'versions', 'add', secretName, '--project', PROJECT, '--data-file', '-'],
-      { stdin: value, quiet: true });
-    console.log(`  ${secretName} <- ${envName} (new version)`);
+    const value = process.env[envName];
 
-    // And let the runtime identity read it. Creating a secret does NOT grant access to
-    // it, so without this the deploy succeeds and the container then fails to start with
-    // a permission error on a secret you just watched be created — which reads as the
-    // secret being broken rather than as an IAM gap.
+    if (!exists) {
+      if (!value) {
+        throw new Error(
+          `secret ${secretName} does not exist and ${envName} is not in .env, ` +
+            'so there is nothing to create it from',
+        );
+      }
+      await run(
+        ['secrets', 'create', secretName, '--project', PROJECT, '--replication-policy', 'automatic'],
+        { quiet: true },
+      );
+      // Over stdin, so the value is never a command-line argument.
+      await run(['secrets', 'versions', 'add', secretName, '--project', PROJECT, '--data-file', '-'],
+        { stdin: value, quiet: true });
+      console.log(`  created ${secretName} from ${envName}`);
+    } else if (rotate && value) {
+      await run(['secrets', 'versions', 'add', secretName, '--project', PROJECT, '--data-file', '-'],
+        { stdin: value, quiet: true });
+      console.log(`  ${secretName} <- ${envName} (new version)`);
+    } else {
+      console.log(`  ${secretName} ok`);
+    }
+
     if (SA) {
       await run([
         'secrets', 'add-iam-policy-binding', secretName, '--project', PROJECT,
         '--member', `serviceAccount:${SA}`, '--role', 'roles/secretmanager.secretAccessor',
       ], { quiet: true });
-      console.log(`    granted secretAccessor to ${SA}`);
     } else {
-      console.log('    ! CLOUD_RUN_SERVICE_ACCOUNT unset — grant secretAccessor by hand');
+      console.log(`    ! CLOUD_RUN_SERVICE_ACCOUNT unset — grant secretAccessor by hand`);
     }
   }
 }
@@ -157,9 +178,9 @@ async function main(): Promise<void> {
   console.log(`identity ${SA || '(default compute service account)'}`);
   console.log('');
 
-  if (pushSecrets) {
-    console.log('pushing secrets from .env into Secret Manager:');
-    if (!dryRun) await ensureSecrets();
+  if (!dryRun) {
+    console.log('secrets:');
+    await ensureSecrets(pushSecrets);
     console.log('');
   }
 
