@@ -279,6 +279,10 @@ function attachClient(socket: import('ws').WebSocket, game: Game): void {
         break;
       case 'command':
         game.applyCommand(msg);
+        // A reset must reach the store NOW. Left to the autosave, a crash or a redeploy in
+        // the next five minutes would bring the old cell back — which is the one outcome a
+        // player who just asked to start over will not expect.
+        if (msg.cmd.op === 'reset') void games.save(game);
         break;
       case 'control':
         game.applyControl(msg);

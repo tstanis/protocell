@@ -173,6 +173,71 @@ describe('§15.6 — a game still behaves exactly as the single-world server did
     expect(g.clock.droppedSteps).toBe(0);
   });
 
+  it('reset returns the cell to exactly a new one, leaving no residue', () => {
+    // The failure this guards is a reset that LOOKS clean — enzyme count back to zero,
+    // ATP back to the start — while some accumulator, grain or field plane survives. So
+    // it is compared against a genuinely fresh cell field by field, not eyeballed.
+    const g = new Game('t');
+    g.world.buildGlucoseChannel();
+    g.world.buildEnzyme();
+    g.world.buildLactateCarrier(2);
+    g.world.inventory.add('lys', 400);
+    for (let i = 0; i < 120 * 30; i++) g.advance(1 / 120);
+    // NOT a grain count: §13.4 balances one channel against one enzyme, so glucose is
+    // eaten about as fast as it arrives and the instantaneous count sits near zero. The
+    // precondition has to be something that is definitely non-zero.
+    expect(g.world.tick).toBeGreaterThan(0);
+    expect(g.world.transporters.size).toBeGreaterThan(0);
+    expect(g.world.enzymes.length).toBeGreaterThan(0);
+    expect(g.world.inventory.get('lys')).toBeGreaterThan(400);
+
+    g.reset();
+
+    const fresh = new Game('fresh');
+    const shape = (x: Game): string => JSON.stringify({
+      tick: x.world.tick,
+      atp: x.world.atp,
+      vol: x.world.cyto.volume,
+      transporters: x.world.transporters.size,
+      enzymes: x.world.enzymes.length,
+      ribosomes: x.world.ribosomes.length,
+      flagella: x.world.flagella.length,
+      grains: x.world.grains.grains.length,
+      vacancies: x.world.vacancies.length,
+      inv: Object.fromEntries(x.world.inventory.snapshot()),
+      patches: x.world.patches.patches.map((p) => p.richness),
+    });
+    expect(shape(g)).toBe(shape(fresh));
+
+    // And the per-cell bookkeeping outside the world, which a naive reset forgets. A
+    // stale savedAtTick is the nastiest: the cell would look already-saved and never be
+    // written, so the OLD cell stays in the store forever.
+    expect(g.savedAtTick).toBe(-1);
+    expect(g.dirty).toBe(true);
+    expect(g.dissipatedRate).toBe(0);
+    expect(g.nextSaveAt).toBe(0);
+  });
+
+  it('a reset cell keeps running, and its clients keep pointing at it', () => {
+    const g = new Game('t');
+    const before = g.world;
+    g.applyCommand({ t: 'command', cmd: { op: 'placeEnzyme' } });
+    g.reset();
+    // Same object: nothing the server or a client holds needs re-wiring.
+    expect(g.world).toBe(before);
+    expect(g.world.enzymes.length).toBe(0);
+    for (let i = 0; i < 240; i++) g.advance(1 / 240);
+    expect(g.world.tick).toBeGreaterThan(0);
+  });
+
+  it('reset arrives as a command, and emits one', () => {
+    const g = new Game('t');
+    g.applyCommand({ t: 'command', cmd: { op: 'placeEnzyme' } });
+    g.applyCommand({ t: 'command', cmd: { op: 'reset' } });
+    expect(g.world.enzymes.length).toBe(0);
+    expect(g.pending.some((e) => e.kind === 'reset')).toBe(true);
+  });
+
   it('commands are the only channel that changes the sim (§3.7)', () => {
     const g = new Game('t');
     expect(g.world.enzymes.length).toBe(0);

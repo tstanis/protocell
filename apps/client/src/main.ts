@@ -2304,6 +2304,36 @@ document.getElementById('release')!.addEventListener('click', () => {
   // "walk here" even while carrying.
   send({ t: 'command', cmd: { op: 'deploy' } });
 });
+/**
+ * Start the cell over. Destructive, so it asks — twice-clicked rather than dialogued.
+ *
+ * A `confirm()` would be one line and is worse: it blocks the event loop, which stalls
+ * rendering and the socket while it is open, and on a page that is a live simulation that
+ * reads as a freeze. Arming the button in place says the same thing without stopping the
+ * world, and it disarms itself if you walk away from it.
+ */
+const resetBtn = document.getElementById('reset') as HTMLButtonElement;
+let armed = 0;
+resetBtn.addEventListener('click', () => {
+  if (Date.now() > armed) {
+    armed = Date.now() + 4000;
+    resetBtn.textContent = 'Really? This deletes it';
+    resetBtn.style.background = 'rgba(220,70,60,0.22)';
+    setTimeout(() => {
+      if (Date.now() > armed) return;
+      armed = 0;
+      resetBtn.textContent = 'Reset cell';
+      resetBtn.style.background = '';
+    }, 4000);
+    return;
+  }
+  armed = 0;
+  resetBtn.textContent = 'Reset cell';
+  resetBtn.style.background = '';
+  send({ t: 'command', cmd: { op: 'reset' } });
+  setStatus('Cell reset. Everything is gone — the death clock is running again (§12.1).');
+});
+
 document.getElementById('cancel')!.addEventListener('click', () => {
   send({ t: 'command', cmd: { op: 'cancelBuild' } });
 });

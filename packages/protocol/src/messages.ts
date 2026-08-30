@@ -99,6 +99,16 @@ export type Command =
    * instead of dumping the player into no state at all.
    */
   | { op: 'autoSeek'; on: boolean }
+  /**
+   * Start this cell over from nothing. Destructive and deliberately not undoable.
+   *
+   * A command rather than an HTTP route, so §3.7's rule holds without exception: commands
+   * are the only channel by which a client affects the simulation. It also means a reset
+   * can only ever reach the cell the socket is already authorised for — with sign-in on,
+   * the id comes from the session (§15.7), so there is no cell to name and therefore no
+   * way to reset somebody else's.
+   */
+  | { op: 'reset' }
   /** §5a — pick a grain up into the nanobot's satchel. Server re-checks reach. */
   | { op: 'pickUp'; grain: number }
   /** §5a — put a carried grain back into the cytoplasm where the bot stands. */
@@ -428,7 +438,9 @@ export type EventKind =
   | 'residuePlaced'
   | 'folded'
   | 'deployRefused'
-  | 'gated';
+  | 'gated'
+  /** The cell was started over (§15.11). */
+  | 'reset';
 
 export interface EventMsg {
   t: 'event';

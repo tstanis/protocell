@@ -40,6 +40,7 @@ npm run client     # renderer on http://localhost:5173
 | **right-click** | **swim that way** (§10A) — flagella on the opposite face fire |
 | **Auto-seek** | **the cell picks its own destination** (§10A.9): it sorts the residue and glucose counts and heads for whichever is lowest. Picking a species by hand takes the wheel back |
 | **Chemotaxis** button | hand steering to the cell: it senses the glucose gradient and climbs it |
+| **Reset cell** | start over from nothing. Destructive and not undoable, so it arms on the first click and fires on the second |
 | **Stop swimming** | coast. Thrust ends instantly and costs nothing — a cell has no momentum |
 
 There is no reduced-motion setting: it was built and then removed (§11.7), because damping

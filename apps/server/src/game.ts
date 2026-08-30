@@ -468,10 +468,39 @@ export class Game {
         if (world.bleb()) this.emit('blebbed');
         break;
 
+      case 'reset':
+        this.reset();
+        this.emit('reset');
+        break;
+
       case 'debugAdd':
         world.grid.add(cmd.species, cmd.tile, cmd.amount);
         break;
     }
+  }
+
+  /**
+   * Start over: replace this cell's contents with those of a brand new one.
+   *
+   * Implemented as `restore(fresh.snapshot())` rather than by swapping in a new `World`,
+   * which is the point. Every client, every subscription and every reference the server
+   * holds keeps pointing at the same object, so there is nothing to re-wire and nothing
+   * that can be left pointing at the old cell. It also reuses §15.8's restore path, which
+   * is already tested to leave no residue of whatever was there before — a reset is
+   * exactly the case that test describes.
+   *
+   * The per-cell bookkeeping outside the world has to be cleared too, or the new cell
+   * inherits the old one's smoothed rates and, worse, its `savedAtTick` — which would
+   * make a freshly reset cell look clean and never be written.
+   */
+  reset(): void {
+    this.world.restore(new World().snapshot());
+    this.dissipatedRate = 0;
+    this.swimRate = 0;
+    this.pending.length = 0;
+    this.savedAtTick = -1;
+    this.nextSaveAt = 0;
+    this.frozenSeconds = 0;
   }
 
   applyControl(msg: Extract<ClientMsg, { t: 'control' }>): void {
