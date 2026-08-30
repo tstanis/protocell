@@ -211,10 +211,39 @@ void whoami().then((me) => {
       `<a href="${apiBase()}/auth/logout" style="color:#8891a0">sign out</a>`;
     document.querySelector('.hud')?.appendChild(who);
   }
-  socket = new WebSocket(simUrl());
-  socket.binaryType = 'arraybuffer';
-  attach(socket);
+  connect();
 });
+
+/**
+ * Open the socket, and reopen it when it drops.
+ *
+ * Not optional on Cloud Run: it terminates every request at 60 minutes, and a WebSocket
+ * is a request — so a long session is guaranteed to be cut, not merely likely to be. The
+ * sim is unaffected (§2.3: it keeps ticking), and the cell is safe either way because a
+ * disconnect saves it, so reconnecting genuinely resumes rather than restarting.
+ *
+ * Backoff is capped and jittered. Uncapped, a server that is down for ten minutes is met
+ * by a client that has backed off to hours; unjittered, every client cut by the same
+ * 60-minute deadline returns in the same instant, which is a thundering herd aimed at a
+ * server that has just proved it can be overwhelmed.
+ */
+let retry = 0;
+function connect(): void {
+  const ws = new WebSocket(simUrl());
+  ws.binaryType = 'arraybuffer';
+  socket = ws;
+  attach(ws);
+  ws.addEventListener('open', () => {
+    retry = 0;
+  });
+  ws.addEventListener('close', () => {
+    if (ws !== socket) return; // superseded by a newer attempt
+    const wait = Math.min(30_000, 500 * 2 ** retry) + Math.random() * 500;
+    retry++;
+    setConn(`reconnecting in ${(wait / 1000).toFixed(1)}s — the sim is still running`, true);
+    setTimeout(connect, wait);
+  });
+}
 
 function send(msg: ClientMsg): void {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));

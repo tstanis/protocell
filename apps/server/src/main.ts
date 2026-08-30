@@ -24,6 +24,7 @@ import type { ClientMsg } from '@protocell/protocol';
 import { Game, type Client } from './game.js';
 import { AUTOSAVE_S, GameRegistry, MAX_LIVE_GAMES, MAX_RESIDENT_GAMES } from './registry.js';
 import { loadStore } from './store.js';
+import { StaticFiles } from './static.js';
 import {
   beginLogin,
   cellIdFor,
@@ -76,6 +77,16 @@ const SEND_HZ = Number(process.env['SEND_HZ'] ?? 30);
  * authenticated session instead, and this becomes the anonymous sandbox.
  */
 const DEFAULT_GAME = process.env['DEFAULT_GAME'] ?? 'solo';
+
+/**
+ * The built client, served from this same origin in production (§15.10).
+ *
+ * Absent in development — vite serves it on :5173 — so a missing dist is normal rather
+ * than an error, and the server simply does not serve static files.
+ */
+const clientDir =
+  process.env['CLIENT_DIR'] ?? fileURLToPath(new URL('../../client/dist', import.meta.url));
+const statics = new StaticFiles(clientDir);
 
 const store = loadStore();
 const games = new GameRegistry(store);
@@ -142,6 +153,16 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Liveness, for the platform's probe. Deliberately does NOT report on storage or
+  // sign-in: a health check that fails when a dependency wobbles makes the platform kill
+  // and restart a server that was serving everybody perfectly well, turning a partial
+  // outage into a total one.
+  if (url.pathname === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, games: games.size, live: games.liveCount }));
+    return;
+  }
+
   // `whoami` is deliberately available even with auth off, so the client has one shape to
   // code against: it asks who it is, and gets either a user or `signedIn: false`.
   if (url.pathname === '/auth/me') {
@@ -159,20 +180,26 @@ const http = createServer((req, res) => {
   }
 
   if (!auth) {
+    if (url.pathname.startsWith('/auth/')) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('sign-in is not configured on this server');
+      return;
+    }
+  } else {
+
+    if (url.pathname === '/auth/google') return beginLogin(auth, res);
+    if (url.pathname === '/auth/logout') return logout(auth, res);
+    if (url.pathname === '/auth/callback') {
+      void handleCallback(auth, req, res, url);
+      return;
+    }
+  }
+
+  void statics.serve(req, res, url.pathname).then((served) => {
+    if (served) return;
     res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('sign-in is not configured on this server');
-    return;
-  }
-
-  if (url.pathname === '/auth/google') return beginLogin(auth, res);
-  if (url.pathname === '/auth/logout') return logout(auth, res);
-  if (url.pathname === '/auth/callback') {
-    void handleCallback(auth, req, res, url);
-    return;
-  }
-
-  res.writeHead(404, { 'Content-Type': 'text/plain' });
-  res.end('not found');
+    res.end('not found');
+  });
 });
 
 /**
@@ -322,6 +349,7 @@ http.listen(PORT, () => {
   console.log(`  sim ${constants.SIM_HZ} Hz, sending ${SEND_HZ} Hz`);
   console.log(`  up to ${MAX_LIVE_GAMES} cells ticking, ${MAX_RESIDENT_GAMES} resident; default cell "${DEFAULT_GAME}"`);
   console.log(`  storage: ${store.kind}, autosave every ${AUTOSAVE_S}s (staggered)`);
+  console.log(`  client:  ${clientDir}`);
   if (auth) {
     console.log(`  Google sign-in ON — one cell per account`);
     console.log(`    redirect URI (must match Google exactly): ${auth.origin}/auth/callback`);

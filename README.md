@@ -143,6 +143,35 @@ by naming it.
 Google will not accept a non-localhost `http://` redirect URI, so anything other than local
 development needs HTTPS.
 
+## Deploying to Cloud Run
+
+```bash
+gcloud run deploy protocell   --source . --region us-central1 --allow-unauthenticated   --no-cpu-throttling --min-instances 1 --max-instances 1   --timeout 3600 --memory 2Gi --cpu 2   --service-account protocell-server@PROJECT.iam.gserviceaccount.com   --set-env-vars GCS_BUCKET=your-bucket   --set-secrets GOOGLE_CLIENT_ID=…,GOOGLE_CLIENT_SECRET=…,SESSION_SECRET=…
+```
+
+Four of those flags are load-bearing, and three of them are the difference between working
+and *appearing* to work:
+
+| flag | why it is not optional |
+|---|---|
+| `--no-cpu-throttling` | **The critical one.** Cloud Run defaults to giving a container CPU only while it is serving a request. §2.3's entire premise is that the cell keeps living while nobody is watching — under throttling it silently freezes the moment you close the tab, and you would only notice by the ATP not having moved |
+| `--min-instances 1` | Scale-to-zero would discard every in-memory cell. They would reload from storage, but every player pays a cold start and loses up to `AUTOSAVE_S` |
+| `--max-instances 1` | A cell lives in RAM in **one process**. A second instance cannot see it, so requests routed there open a *second copy* of the same cell from storage — and both would then write to the same object. This is the one that corrupts data rather than merely degrading it |
+| `--timeout 3600` | Cloud Run caps a request — including a WebSocket — at 60 minutes. The client reconnects and resumes, so this sets how often that happens rather than whether it works |
+
+Because `max-instances 1` is a hard ceiling, **this deployment does not scale horizontally**.
+That is a property of a stateful simulation, not an oversight: growing past one machine
+means sharding players across processes by their Google subject, not adding replicas.
+
+The container serves the built client from the same origin as the socket, so there is no
+CORS to configure and the session cookie works with plain `SameSite=Lax`. Set
+`PUBLIC_ORIGIN` and `APP_ORIGIN` to the service URL, and add
+`https://SERVICE-URL/auth/callback` to the OAuth client's authorized redirect URIs.
+
+Attach a service account with **Storage Object Admin on the bucket** and no key is needed:
+the metadata server issues tokens directly, so there is no key material in the deployment
+at all.
+
 ## Other commands
 
 ```bash
