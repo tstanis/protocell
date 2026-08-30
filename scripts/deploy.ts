@@ -232,10 +232,6 @@ async function main(): Promise<void> {
 
   console.log('');
   console.log(`deployed: ${url ?? '(url unknown)'}`);
-  console.log('');
-  console.log('One manual step remains — add this to the OAuth client\'s');
-  console.log('Authorized redirect URIs, exactly:');
-  console.log(`  ${url}/auth/callback`);
 }
 
 main().catch((e: unknown) => {
