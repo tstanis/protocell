@@ -145,6 +145,27 @@ development needs HTTPS.
 
 ## Deploying to Cloud Run
 
+Add the deploy settings to `.env` (`GCP_PROJECT`, `GCP_REGION`,
+`CLOUD_RUN_SERVICE_ACCOUNT` — see `.env.example`), then:
+
+```bash
+npm run deploy -- --push-secrets   # first time: also copies secrets into Secret Manager
+npm run deploy                     # subsequently
+npm run deploy -- --dry-run        # print the gcloud command without running it
+```
+
+**Secrets are mounted from Secret Manager by reference and never passed as environment
+variables.** An env var would land in the service's configuration in plaintext, readable by
+anyone with Viewer on the project, and sit in your shell history and process list on the
+way there. `--push-secrets` pipes the values from `.env` in over stdin, so they are never
+command-line arguments either.
+
+The script also handles the ordering problem that `PUBLIC_ORIGIN` must be the service's own
+URL, which does not exist until the service has been deployed once: it deploys, reads the
+URL back, and updates the origins to match. So a first deploy runs `gcloud` twice.
+
+The equivalent by hand:
+
 ```bash
 gcloud run deploy protocell   --source . --region us-central1 --allow-unauthenticated   --no-cpu-throttling --min-instances 1 --max-instances 1   --timeout 3600 --memory 2Gi --cpu 2   --service-account protocell-server@PROJECT.iam.gserviceaccount.com   --set-env-vars GCS_BUCKET=your-bucket   --set-secrets GOOGLE_CLIENT_ID=…,GOOGLE_CLIENT_SECRET=…,SESSION_SECRET=…
 ```
