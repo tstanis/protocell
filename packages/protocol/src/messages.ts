@@ -108,6 +108,15 @@ export type Command =
    * the id comes from the session (§15.7), so there is no cell to name and therefore no
    * way to reset somebody else's.
    */
+  /**
+   * §9.6 — ask the ribosomes for a protein. `residue` picks the type for a selectable
+   * gene, exactly as `selectGene` does for hand assembly.
+   */
+  | { op: 'queueProtein'; gene: string; residue?: string }
+  /** Drop a queued order by index. Something already being assembled is a job, not an order. */
+  | { op: 'cancelOrder'; index: number }
+  /** Pick up a protein a ribosome finished, so it can be carried and sited (§9.2 step 5). */
+  | { op: 'takePending'; index: number }
   | { op: 'reset' }
   /** §5a — pick a grain up into the nanobot's satchel. Server re-checks reach. */
   | { op: 'pickUp'; grain: number }
@@ -319,6 +328,16 @@ export interface ScalarsMsg {
   vacancies: Array<{ tile: number; gene: string; covered: boolean }>;
 
   /**
+   * §9.6 — what the ribosomes have been asked for, and what they have finished.
+   *
+   * `orders` is the queue in service order; `pending` is folded and waiting for the player
+   * to carry and site. A ribosome knows where a REPAIR goes and cannot know where you want
+   * something new, so that decision stays yours (§6.7).
+   */
+  orders: Array<{ gene: string; residue: string | null }>;
+  pending: Array<{ gene: string; residue: string | null }>;
+
+  /**
    * §10A.9 — every stock the seeker compares, lowest first.
    *
    * Just counts: residues from the inventory, glucose particles inside the cell. Sent so
@@ -439,6 +458,8 @@ export type EventKind =
   | 'folded'
   | 'deployRefused'
   | 'gated'
+  /** §9.6 — a queued protein was finished and is waiting to be sited. */
+  | 'orderReady'
   /** The cell was started over (§15.11). */
   | 'reset';
 

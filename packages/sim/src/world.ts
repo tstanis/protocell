@@ -121,6 +121,22 @@ export const PICKUP_REACH = 3;
  */
 export const COLLECT_REACH = 7;
 
+/**
+ * How many proteins may be queued at once (§9.6).
+ *
+ * A bound rather than a feature: an unbounded queue lets a player park a hundred orders
+ * and walk away, which turns the ribosome from a thing you direct into a thing you fill
+ * once. Eight is more than the standing build-out has distinct proteins, so it never
+ * blocks a real plan.
+ */
+export const MAX_ORDERS = 8;
+
+/** A queued or finished order. The residue is null for genes that do not select one. */
+export interface Order {
+  gene: GeneId;
+  residue: AminoType | null;
+}
+
 const GLU = SPECIES_ID.glucose;
 const LAC = SPECIES_ID.lactate;
 
@@ -268,10 +284,10 @@ export class World {
   readonly vacancies: Vacancy[] = [];
 
   /** §9.5 — what the player has asked for, over and above repairs. */
-  readonly orders: GeneId[] = [];
+  readonly orders: Order[] = [];
 
   /** Folded proteins a ribosome has finished on an ORDER, waiting for the player to site. */
-  readonly pendingProteins: GeneId[] = [];
+  readonly pendingProteins: Order[] = [];
 
   /**
    * §5a — the countable matter inside the cell.
@@ -969,10 +985,12 @@ export class World {
         } else if (this.claimRenewal(r)) {
           // claimed in place
         } else if (this.orders.length > 0) {
-          const gene = this.orders.shift()!;
+          // The residue rides along. Dropping it here would silently turn every ordered
+          // amino transporter into a glycine one — §5a.10's bug, rebuilt one layer up.
+          const o = this.orders.shift()!;
           r.job = {
-            gene, source: 'order', tile: null,
-            residue: null, placed: 0, bondT: 0, blockedOn: null, starved: 0,
+            gene: o.gene, source: 'order', tile: null,
+            residue: o.residue, placed: 0, bondT: 0, blockedOn: null, starved: 0,
           };
         }
       }
@@ -997,7 +1015,7 @@ export class World {
               species: job.species, transporter: job.transporter, residue: job.residue,
             });
           } else {
-            this.orders.push(job.gene);
+            this.orders.push({ gene: job.gene, residue: job.residue ?? null });
           }
           r.job = null;
         }
@@ -1021,7 +1039,7 @@ export class World {
             species: job.species, transporter: job.transporter, residue: job.residue,
           });
         } else {
-          this.orders.push(job.gene);
+          this.orders.push({ gene: job.gene, residue: job.residue ?? null });
         }
         r.job = null;
         continue;
@@ -1045,6 +1063,64 @@ export class World {
       }
     }
     return finished;
+  }
+
+  /**
+   * §9.6 — ask the ribosomes for a protein.
+   *
+   * The queue is what makes a ribosome a FACTORY rather than a repair crew. Until this
+   * existed a ribosome could only put back what had already been there, so nothing new
+   * could be built without the nanobot walking a chain bead by bead — automation that
+   * could not actually make anything.
+   *
+   * Orders sit BELOW every repair and renewal in the triage (§9.5), and that ordering is
+   * the design rather than an implementation detail: a cell that spends its last lysine on
+   * something you asked for while a glucose channel rots is not automating, it is obeying.
+   * A queue is what the ribosomes do with SPARE capacity.
+   */
+  queueProtein(gene: GeneId, residue?: AminoType): { ok: boolean; reason?: string } {
+    const g = GENES[gene];
+    if (!g) return { ok: false, reason: 'no such gene' };
+    if (this.orders.length >= MAX_ORDERS) {
+      return { ok: false, reason: `the queue holds ${MAX_ORDERS}` };
+    }
+    this.orders.push({ gene, residue: g.selectableResidue ? (residue ?? 'gly') : null });
+    return { ok: true };
+  }
+
+  /** Drop a queued order. Anything already being assembled is a job, not an order. */
+  cancelOrder(index: number): boolean {
+    if (index < 0 || index >= this.orders.length) return false;
+    this.orders.splice(index, 1);
+    return true;
+  }
+
+  /**
+   * Pick up a protein a ribosome finished, so it can be carried and sited.
+   *
+   * Loads it into the SAME carrying state hand-assembly ends in, which is why this is a
+   * few lines: §9.2's deploy, the membrane validation, the client's "click a membrane
+   * tile" prompt and every deploy event already operate on that state and need to know
+   * nothing about where the protein came from.
+   */
+  takePending(index: number): { ok: boolean; reason?: string } {
+    if (this.build.phase !== 'idle') {
+      return { ok: false, reason: 'finish or cancel what you are holding first' };
+    }
+    if (index < 0 || index >= this.pendingProteins.length) {
+      return { ok: false, reason: 'nothing there' };
+    }
+    const o = this.pendingProteins.splice(index, 1)[0]!;
+    const gene = GENES[o.gene];
+    this.build.phase = 'carrying';
+    this.build.gene = gene;
+    this.build.chain = [...gene.sequence];
+    this.build.fold = 1;
+    this.build.bondT = 0;
+    this.build.blockedOn = null;
+    this.build.residue = o.residue;
+    this.bot.carrying = [...gene.sequence];
+    return { ok: true };
   }
 
   /**
@@ -1148,7 +1224,7 @@ export class World {
     // A REPAIR knows where it goes — back into the tile whose protein failed. An ORDER
     // does not, so it is folded and handed to the player to site (§6.7 stays theirs).
     if (job.source === 'order' || job.tile === null) {
-      this.pendingProteins.push(job.gene);
+      this.pendingProteins.push({ gene: job.gene, residue: job.residue ?? null });
       return;
     }
     const tile = job.tile;
@@ -1821,8 +1897,8 @@ export class World {
         tile: f.tile, dx: f.dx, dy: f.dy, firing: f.firing, integrity: f.integrity,
       })),
       vacancies: this.vacancies.map((v) => ({ ...v })),
-      orders: [...this.orders],
-      pendingProteins: [...this.pendingProteins],
+      orders: this.orders.map((o) => ({ ...o })),
+      pendingProteins: this.pendingProteins.map((o) => ({ ...o })),
       bot: {
         x: this.bot.x, y: this.bot.y,
         targetX: this.bot.targetX, targetY: this.bot.targetY,
@@ -1912,10 +1988,16 @@ export class World {
 
     this.vacancies.length = 0;
     for (const v of s.vacancies) this.vacancies.push(v as Vacancy);
+    // Orders used to be bare gene ids and are now {gene, residue}. Normalised rather
+    // than version-bumped: a bump would refuse every save written before today, which for
+    // a deployed game means telling live players their cell cannot be loaded. A two-line
+    // migration is a much better trade than a clean format.
+    const asOrder = (o: GeneId | Order): Order =>
+      typeof o === 'string' ? { gene: o, residue: null } : { gene: o.gene, residue: o.residue };
     this.orders.length = 0;
-    this.orders.push(...s.orders);
+    this.orders.push(...s.orders.map(asOrder));
     this.pendingProteins.length = 0;
-    this.pendingProteins.push(...s.pendingProteins);
+    this.pendingProteins.push(...s.pendingProteins.map(asOrder));
 
     this.bot.x = s.bot.x;
     this.bot.y = s.bot.y;

@@ -1304,7 +1304,33 @@ function buildGeneButtons(): void {
     } else {
       b.addEventListener('click', () => send({ t: 'command', cmd: { op: 'selectGene', gene: g.id } }));
     }
-    box.appendChild(b);
+    // §9.6 — the same gene, but asked of the ribosomes instead of folded by hand.
+    //
+    // Deliberately a second control on the same row rather than a mode switch: hand
+    // assembly and the queue are both legitimate at every point in the game, and which one
+    // you want depends on whether you are at the nucleus and whether you are in a hurry.
+    // A toggle would make you set that up before knowing which you meant.
+    const q = document.createElement('button');
+    q.id = `queue_${g.id}`;
+    q.textContent = '+';
+    q.title = `Queue ${g.label} for the ribosomes`;
+    q.style.cssText =
+      'flex:0 0 auto;padding:7px 10px;margin-left:6px;font-weight:700;line-height:1';
+    q.addEventListener('click', () =>
+      send({
+        t: 'command',
+        cmd: g.pickResidue
+          ? { op: 'queueProtein', gene: g.id, residue: pickedResidue }
+          : { op: 'queueProtein', gene: g.id },
+      }),
+    );
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:stretch';
+    b.style.flex = '1';
+    row.appendChild(b);
+    row.appendChild(q);
+    box.appendChild(row);
 
     if (g.pickResidue) {
       const row = document.createElement('div');
@@ -1354,6 +1380,18 @@ function panels(): void {
   const canSelect = s.bot.atNucleus && s.build.phase === 'idle';
   for (const g of GENE_LIST) {
     (document.getElementById(`gene_${g.id}`) as HTMLButtonElement).disabled = !canSelect;
+    // Queueing has NOTHING to do with where the nanobot is standing — that is the point of
+    // it. It is gated on having a ribosome to do the work and room in the queue.
+    const q = document.getElementById(`queue_${g.id}`) as HTMLButtonElement | null;
+    if (q) {
+      const full = s.orders.length >= 8;
+      q.disabled = s.ribosomes.length === 0 || full;
+      q.title = s.ribosomes.length === 0
+        ? 'No ribosomes yet — build one and it can make this for you'
+        : full
+          ? 'Queue is full'
+          : `Queue ${g.label} for the ribosomes`;
+    }
   }
   document.getElementById('genehint')!.textContent = s.bot.atNucleus
     ? s.build.phase === 'idle'
@@ -1507,6 +1545,41 @@ function panels(): void {
 
   // §9.5 — a standing readout of the repair crew. Hovering each one works, but "is
   // anything being maintained right now" should be answerable without hunting.
+  // §9.6 — the work queue. Two lists that mean different things and must not look alike:
+  // what the ribosomes have been ASKED for, and what they have FINISHED and is waiting on
+  // you to carry and site.
+  const queue = document.getElementById('queue');
+  if (queue) {
+    queue.innerHTML = '';
+    const label = (o: { gene: string; residue: string | null }): string =>
+      (GENE_LIST.find((g) => g.id === o.gene)?.label ?? o.gene) + (o.residue ? ` (${o.residue})` : '');
+
+    for (const [i, o] of s.pending.entries()) {
+      const b = document.createElement('button');
+      b.textContent = `take ${label(o)}`;
+      b.style.cssText = 'font-size:11px;padding:4px 8px;border-color:rgba(126,231,154,.55);color:#9fe8b0';
+      b.title = 'Folded and ready. Picking it up puts it in your hands to site (§6.7).';
+      b.disabled = s.build.phase !== 'idle';
+      b.addEventListener('click', () => send({ t: 'command', cmd: { op: 'takePending', index: i } }));
+      queue.appendChild(b);
+    }
+    for (const [i, o] of s.orders.entries()) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.style.cssText = 'font-size:11px;cursor:pointer';
+      chip.textContent = `${i + 1}. ${label(o)} ×`;
+      chip.title = 'Queued. Click to cancel. Orders are served after every repair (§9.5).';
+      chip.addEventListener('click', () => send({ t: 'command', cmd: { op: 'cancelOrder', index: i } }));
+      queue.appendChild(chip);
+    }
+    if (s.orders.length === 0 && s.pending.length === 0) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = s.ribosomes.length ? 'queue empty — click + on a blueprint' : 'no ribosomes yet';
+      queue.appendChild(chip);
+    }
+  }
+
   const ribo = document.getElementById('ribo');
   if (ribo) {
     ribo.innerHTML = '';

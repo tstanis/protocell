@@ -306,6 +306,8 @@ export class Game {
         covered: world.coveredByRibosome(v.tile),
       })),
       stranded: world.stranded(),
+      orders: world.orders.map((o) => ({ gene: o.gene, residue: o.residue })),
+      pending: world.pendingProteins.map((o) => ({ gene: o.gene, residue: o.residue })),
       scarcity: world.scarcity(),
       motility: {
         x: world.motility.x,
@@ -467,6 +469,21 @@ export class Game {
         // The server re-checks the tension predicate; a client cannot bleb by asking.
         if (world.bleb()) this.emit('blebbed');
         break;
+
+      case 'queueProtein': {
+        const r = world.queueProtein(cmd.gene as GeneId, cmd.residue as AminoType | undefined);
+        if (!r.ok) this.emit('deployRefused', undefined, r.reason);
+        break;
+      }
+      case 'cancelOrder':
+        world.cancelOrder(cmd.index);
+        break;
+      case 'takePending': {
+        const r = world.takePending(cmd.index);
+        if (r.ok) this.emit('geneSelected');
+        else this.emit('deployRefused', undefined, r.reason);
+        break;
+      }
 
       case 'reset':
         this.reset();

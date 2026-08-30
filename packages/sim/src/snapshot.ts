@@ -84,8 +84,12 @@ export interface WorldSnapshot {
   flagella: Array<{ tile: number; dx: number; dy: number; firing: boolean; integrity: number }>;
 
   vacancies: unknown[];
-  orders: GeneId[];
-  pendingProteins: GeneId[];
+  /**
+   * `GeneId` is the pre-§9.6 shape, kept readable so saves written before the queue
+   * existed still load. See `World.restore`.
+   */
+  orders: Array<GeneId | { gene: GeneId; residue: AminoType | null }>;
+  pendingProteins: Array<GeneId | { gene: GeneId; residue: AminoType | null }>;
 
   bot: {
     x: number;

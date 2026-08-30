@@ -638,10 +638,30 @@ The principle this violates was already written down for §9.2's sequences — t
 
 > **A game may take away anything except the last means of recovery — and if it does, it must say so.** The failure was not that the cell could die; it is that it died silently, with a control that stopped responding as the only symptom.
 
-### 9.6 Full pipeline (later layers)
+### 9.6 The ribosome queue — asking for a protein
+
+A ribosome that can only put back what was already there is a repair crew, not a factory:
+nothing new could be built without the nanobot walking a chain bead by bead. The queue is
+what makes automation able to *make* something.
+
+**Orders sit below every repair and renewal in the triage (§9.5), and that ordering is the
+design.** A cell that spends its last lysine on what you asked for while a glucose channel
+rots is obeying rather than automating. A queue is what the ribosomes do with *spare*
+capacity — which also means a cell under maintenance pressure visibly stops taking orders,
+and that is information rather than a failure.
+
+**A finished order is handed to you, not placed.** A ribosome knows where a repair goes —
+back in the hole — and cannot know where you want something new, so §6.7's placement
+decision stays yours. Taking one loads it into exactly the carrying state hand-assembly
+ends in, so deploy, membrane validation and every event already work on it unchanged.
+
+The queue is bounded (8). Unbounded, a player parks a hundred orders and walks away, which
+turns the ribosome from something you direct into something you fill once.
+
+### 9.7 Full pipeline (later layers)
 DNA (master record) → **transcription** → mRNA (disposable working blueprint; number of mRNA copies of a gene = that protein's parallel production rate — the production dial) → ribosome reads codons → tRNAs translate. Expose the mRNA codon strip under the amino-acid beads as an optional depth layer.
 
-### 9.7 Mutation as a mechanic (evolution + disease share one root)
+### 9.8 Mutation as a mechanic (evolution + disease share one root)
 A single base flip has a **spectrum** of outcomes falling out of the code's structure: **silent** (hit a don't-care third base — nothing changes), **missense** (swap one amino acid — a different protein, maybe better/worse — raw material of evolution), or **nonsense** (create a premature stop — truncated, useless protein). One mutation system yields the evolutionary tech tree and the disease system from a single elegant root. (Ribosome/tRNA decode animation intentionally deferred.)
 
 ---
