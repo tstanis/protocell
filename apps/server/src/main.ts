@@ -352,7 +352,7 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
 
 // Pay the token exchange and TLS handshake now: measured, the first GCS write costs
 // ~2 s and the fourth ~200 ms, and there is no reason for a player to absorb that.
-if (store.warm) {
+if (store?.warm) {
   void store.warm().catch((e: unknown) => console.error(`  ! storage warm-up failed: ${(e as Error).message}`));
 }
 
@@ -366,7 +366,14 @@ http.listen(PORT, () => {
   console.log(`  cytoplasm ${g.world.cyto.tileCount} tiles, membrane ${g.world.membraneTiles}`);
   console.log(`  sim ${constants.SIM_HZ} Hz, sending ${SEND_HZ} Hz`);
   console.log(`  up to ${MAX_LIVE_GAMES} cells ticking, ${MAX_RESIDENT_GAMES} resident; default cell "${DEFAULT_GAME}"`);
-  console.log(`  storage: ${store.kind}, autosave every ${AUTOSAVE_S}s (staggered)`);
+  if (store) {
+    console.log(`  storage: ${store.kind}, autosave every ${AUTOSAVE_S}s (staggered)`);
+    if (store.kind === 'gcs' && process.env['NODE_ENV'] !== 'production') {
+      console.log(`  ! writing to a REAL bucket from a non-production run`);
+    }
+  } else {
+    console.log(`  storage: none — nothing is saved (set STORE=file or STORE=gcs)`);
+  }
   console.log(`  client:  ${clientDir}`);
   if (auth) {
     console.log(`  Google sign-in ON — one cell per account`);

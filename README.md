@@ -136,6 +136,7 @@ no sign-in. Configure it and each Google account gets its own cell instead.
 | `APP_ORIGIN` | where to send the browser after sign-in, default `http://localhost:5173` |
 | `ALLOWED_ORIGINS` | comma-separated browser origins allowed to call `/auth/*` with credentials |
 | `MAX_LIVE_GAMES` | how many cells tick at once; defaults to one per 5.5% of a core |
+| `STORE` | `none` \| `file` \| `gcs`. **Defaults to `none` locally** and to gcs/file in production — cells are keyed by Google subject, so a local server that persisted would write to the live bucket under the live key |
 
 The cell id is derived from the Google subject (`u:<sub>`) and a `?game=` parameter is
 **ignored** for a signed-in player — honouring it would let anyone open anyone else's cell

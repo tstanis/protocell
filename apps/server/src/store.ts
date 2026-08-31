@@ -301,10 +301,33 @@ export function gcsCredentialSource(): string {
   return 'metadata server (attached service account)';
 }
 
-export function loadStore(): CellStore {
-  const bucket = process.env['GCS_BUCKET'];
-  if (bucket) return new GcsCellStore(bucket, process.env['GCS_PREFIX'] ?? 'cells/');
-  return new FileCellStore(process.env['DATA_DIR'] ?? 'data/cells');
+/**
+ * Which store to use, and why local development gets none by default.
+ *
+ * `STORE` is `none` | `file` | `gcs`. Unset, it is `none` unless NODE_ENV=production,
+ * which is the important half.
+ *
+ * The footgun this closes: `.env` carries `GCS_BUCKET` because `npm run gcs:check` needs
+ * it, and cells are keyed by `u:<google-sub>` — the same subject locally and in
+ * production. So a local server that persisted by default would write to the live bucket
+ * under the live key, and playing on localhost would silently overwrite the cell on the
+ * deployed service. Nothing about that is visible until the save you wanted is gone.
+ *
+ * Deriving persistence from "is a bucket configured" was the mistake. Configuration says
+ * what is *available*, not what this process should *do* with it.
+ */
+export function loadStore(): CellStore | null {
+  const prod = process.env['NODE_ENV'] === 'production';
+  const mode = process.env['STORE'] ?? (prod ? (process.env['GCS_BUCKET'] ? 'gcs' : 'file') : 'none');
+
+  if (mode === 'none') return null;
+  if (mode === 'gcs') {
+    const bucket = process.env['GCS_BUCKET'];
+    if (!bucket) throw new Error('STORE=gcs but GCS_BUCKET is not set');
+    return new GcsCellStore(bucket, process.env['GCS_PREFIX'] ?? 'cells/');
+  }
+  if (mode === 'file') return new FileCellStore(process.env['DATA_DIR'] ?? 'data/cells');
+  throw new Error(`STORE=${mode} — expected none, file or gcs`);
 }
 
 export { toKey as __toKey, fromKey as __fromKey };
